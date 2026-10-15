@@ -383,6 +383,36 @@ CruthStatus cruth_retopo_add_quad(CruthRetopo* retopo, const CruthVec3 corners[4
     });
 }
 
+CruthStatus cruth_retopo_quad_pen_tap(CruthRetopo* retopo, CruthVec3 point, CruthQuadPenResult* result) {
+    if (!retopo) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    if (result) *result = {};
+    return guarded([&] {
+        auto r = retopo->retopo.quad_pen_tap(to_core(point));
+        if (!r) {
+            if (result) result->pending = static_cast<uint32_t>(retopo->retopo.quad_pen_pending().size());
+            return from_error(r.error());
+        }
+        if (result) {
+            result->pending = static_cast<uint32_t>(r.value().pending);
+            result->face_added = r.value().face_added;
+        }
+        return CRUTH_OK;
+    });
+}
+
+void cruth_retopo_quad_pen_lift(CruthRetopo* retopo) {
+    if (retopo) retopo->retopo.quad_pen_lift();
+}
+
+size_t cruth_retopo_quad_pen_pending(const CruthRetopo* retopo, CruthVec3* out, size_t capacity) {
+    if (!retopo) return 0;
+    return guarded_value<size_t>(0, [&] {
+        const auto pending = retopo->retopo.quad_pen_pending();
+        for (std::size_t i = 0; out && i < pending.size() && i < capacity; ++i) out[i] = to_c(pending[i]);
+        return pending.size();
+    });
+}
+
 void cruth_retopo_relax(CruthRetopo* retopo, int32_t iterations) {
     if (retopo) guarded([&] {
             retopo->retopo.relax(std::clamp(iterations, 0, 100));

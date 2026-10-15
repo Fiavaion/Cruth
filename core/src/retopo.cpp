@@ -129,11 +129,9 @@ Vec3 RetopoMesh::normal_at(Vec3 p) const {
     return normalize(cross(P[t[1]] - P[t[0]], P[t[2]] - P[t[0]]));
 }
 
-Index RetopoMesh::add_vertex_welded(Vec3 p) {
-    p = snap(p);
-    const float r2 = weld_radius * weld_radius;
+Index RetopoMesh::nearest_vertex(Vec3 p, float radius) const {
     Index best = kInvalidIndex;
-    float best_d = r2;
+    float best_d = radius * radius;
     for (Index v = 0; v < mesh_.vertex_count(); ++v) {
         const float d = length_squared(mesh_.positions[v] - p);
         if (d <= best_d) {
@@ -141,7 +139,13 @@ Index RetopoMesh::add_vertex_welded(Vec3 p) {
             best = v;
         }
     }
-    return best != kInvalidIndex ? best : mesh_.add_vertex(p);
+    return best;
+}
+
+Index RetopoMesh::add_vertex_welded(Vec3 p) {
+    p = snap(p);
+    const Index v = nearest_vertex(p, weld_radius);
+    return v != kInvalidIndex ? v : mesh_.add_vertex(p);
 }
 
 // Adds a face wound so its normal agrees with the reference surface.
@@ -281,6 +285,98 @@ Status RetopoMesh::add_quad(const std::array<Vec3, 4>& corners) {
     }
     add_face_outward(c);
     return Status::ok();
+}
+
+Result<RetopoMesh::QuadPenTap> RetopoMesh::quad_pen_tap(Vec3 p) {
+    PenTap tap{snap(p), kInvalidIndex};
+    tap.vertex = nearest_vertex(tap.position, weld_radius);
+    if (tap.vertex != kInvalidIndex) tap.position = mesh_.positions[tap.vertex];
+    for (const PenTap& q : pen_) {
+        if ((tap.vertex != kInvalidIndex && q.vertex == tap.vertex) || distance(q.position, tap.position) <= weld_radius) {
+            return Error{ErrorCode::InvalidArgument, "quad pen: tap repeats a pending corner"};
+        }
+    }
+    pen_.push_back(tap);
+    QuadPenTap out;
+    if (pen_.size() < 4) {
+        out.pending = pen_.size();
+        return out;
+    }
+
+    // Taps need not go round the quad: the shortest closed path through them
+    // does (a crossed order is always longer), keeping the fixed taps first so
+    // a chained quad keeps the shared edge.
+    std::array<std::size_t, 4> order{0, 1, 2, 3}, best = order;
+    float best_len = 3.4e38f;
+    do {
+        float len = 0;
+        for (std::size_t i = 0; i < 4; ++i) len += distance(pen_[order[i]].position, pen_[order[(i + 1) % 4]].position);
+        if (len < best_len) {
+            best_len = len;
+            best = order;
+        }
+    } while (std::next_permutation(order.begin() + std::ptrdiff_t(pen_fixed_), order.end()));
+
+    std::unordered_map<std::uint64_t, int> uses;
+    for (std::size_t f = 0; f < mesh_.face_count(); ++f) {
+        auto fv = mesh_.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) ++uses[edge_key(fv[i], fv[(i + 1) % fv.size()])];
+    }
+    auto edge_uses = [&](Index a, Index b) {
+        if (a == kInvalidIndex || b == kInvalidIndex) return 0;
+        const auto it = uses.find(edge_key(a, b));
+        return it == uses.end() ? 0 : it->second;
+    };
+    auto reject = [&](const char* why) -> Error {
+        pen_.pop_back();
+        return Error{ErrorCode::InvalidArgument, why};
+    };
+    std::array<Index, 4> existing{};
+    for (std::size_t i = 0; i < 4; ++i) existing[i] = pen_[best[i]].vertex;
+    for (std::size_t i = 0; i < 4; ++i) {
+        if (edge_uses(existing[i], existing[(i + 1) % 4]) >= 2) return reject("quad pen: an edge of the quad already has two faces");
+    }
+    if (std::find(existing.begin(), existing.end(), kInvalidIndex) == existing.end()) {
+        std::array<Index, 4> sorted = existing;
+        std::sort(sorted.begin(), sorted.end());
+        for (std::size_t f = 0; f < mesh_.face_count(); ++f) {
+            if (mesh_.face_size(f) != 4) continue;
+            std::array<Index, 4> fv{};
+            std::copy_n(mesh_.face(f).begin(), 4, fv.begin());
+            std::sort(fv.begin(), fv.end());
+            if (fv == sorted) return reject("quad pen: the quad already exists");
+        }
+    }
+
+    std::vector<Index> corners(4);
+    for (std::size_t i = 0; i < 4; ++i) {
+        corners[i] = existing[i] != kInvalidIndex ? existing[i] : mesh_.add_vertex(pen_[best[i]].position);
+    }
+    add_face_outward(corners);
+    out.face_added = true;
+    // Continue the strip from the quad's last edge, unless that edge is now
+    // shared by two faces and so has no free side.
+    const Index c2 = corners[2], c3 = corners[3];
+    pen_.clear();
+    pen_fixed_ = 1;
+    if (edge_uses(c2, c3) + 1 < 2) {
+        pen_.push_back({mesh_.positions[c3], c3});
+        pen_.push_back({mesh_.positions[c2], c2});
+        pen_fixed_ = 2;
+    }
+    out.pending = pen_.size();
+    return out;
+}
+
+void RetopoMesh::quad_pen_lift() {
+    pen_.clear();
+    pen_fixed_ = 1;
+}
+
+std::vector<Vec3> RetopoMesh::quad_pen_pending() const {
+    std::vector<Vec3> out;
+    for (const PenTap& t : pen_) out.push_back(t.vertex != kInvalidIndex ? mesh_.positions[t.vertex] : t.position);
+    return out;
 }
 
 std::pair<Index, Index> RetopoMesh::nearest_edge(Vec3 p) const {
@@ -468,6 +564,7 @@ void RetopoMesh::compact() {
         }
         out.add_face(c);
     }
+    quad_pen_lift();  // pending taps refer to old vertex numbers
     for (Index& v : last_contour_) v = v < remap.size() ? remap[v] : kInvalidIndex;
     if (std::find(last_contour_.begin(), last_contour_.end(), kInvalidIndex) != last_contour_.end()) last_contour_.clear();
     mesh_ = std::move(out);

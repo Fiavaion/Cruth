@@ -190,6 +190,22 @@ CruthStatus cruth_retopo_add_strip(CruthRetopo* retopo, const CruthVec3* stroke,
 CruthStatus cruth_retopo_add_contour(CruthRetopo* retopo, const CruthVec3* stroke, uint32_t count, int32_t loop_vertices,
                                      CruthVec3 view_direction);
 CruthStatus cruth_retopo_add_quad(CruthRetopo* retopo, const CruthVec3 corners[4]);
+
+/* Quad pen, tap by tap (T-02). Each tap is one point on the surface; a tap near a
+ * cage vertex reuses it, so quads share edges. The 4th pending tap makes a quad
+ * (taps in any order round it), then the chain continues from that quad's last
+ * edge: every 2 more taps add the next quad of a strip. Lift ends the chain.
+ * A rejected tap (repeats a pending corner, or would make a non-manifold or
+ * duplicate quad) returns CRUTH_ERROR_INVALID_ARGUMENT and keeps the pending taps. */
+typedef struct CruthQuadPenResult {
+    uint32_t pending; /* taps waiting for the next quad, 0..3 */
+    bool face_added;  /* this tap closed a quad */
+} CruthQuadPenResult;
+
+CruthStatus cruth_retopo_quad_pen_tap(CruthRetopo* retopo, CruthVec3 point, CruthQuadPenResult* result);
+void cruth_retopo_quad_pen_lift(CruthRetopo* retopo);
+/* Pending tap positions for an overlay. Returns the count; writes at most capacity. */
+size_t cruth_retopo_quad_pen_pending(const CruthRetopo* retopo, CruthVec3* out, size_t capacity);
 void cruth_retopo_relax(CruthRetopo* retopo, int32_t iterations);
 CruthRetopoStats cruth_retopo_stats(const CruthRetopo* retopo);
 /* Edges as line segments for an overlay: 6 floats per edge. Returns the edge count;

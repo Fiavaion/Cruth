@@ -10,6 +10,7 @@
 //                bridged to the previous contour loop
 // - bridge       two vertex chains or loops -> quads          (T-02 Bridge)
 // - add_quad     four points -> one quad                      (T-02 Quad-pen)
+// - quad_pen_tap single taps -> quads, chained into strips      (T-02 Quad-pen)
 // - move_vertex / relax / delete_face                         (T-03)
 //
 // The shell turns Pencil input into these calls; the result goes back to the
@@ -65,6 +66,24 @@ public:
     // One quad through four surface points; corners weld to nearby vertices.
     Status add_quad(const std::array<Vec3, 4>& corners);
 
+    // Quad-pen tap input (T-02 Quad-pen): each tap is one surface point. A tap
+    // within weld_radius of a cage vertex reuses that vertex, so new quads share
+    // edges with the cage. The fourth pending tap closes a quad; the taps may go
+    // round it in any order (the shortest-perimeter order is used). The chain
+    // then continues from the quad's last edge, so each further pair of taps
+    // adds the next quad of a strip, until quad_pen_lift() ends the chain. A tap
+    // that repeats a pending corner, or would close a quad onto an edge that
+    // already has two faces or duplicate a face, is rejected and the pending
+    // taps are kept. Edits that renumber vertices end the chain.
+    struct QuadPenTap {
+        std::size_t pending = 0;  // taps waiting for the next quad, 0..3
+        bool face_added = false;
+    };
+    Result<QuadPenTap> quad_pen_tap(Vec3 p);
+    void quad_pen_lift();
+    // Positions of the pending taps, for an overlay.
+    std::vector<Vec3> quad_pen_pending() const;
+
     // Edge (vertex pair) of the current mesh nearest to p.
     std::pair<Index, Index> nearest_edge(Vec3 p) const;
 
@@ -83,6 +102,12 @@ public:
     RetopoStats stats() const;
 
 private:
+    struct PenTap {
+        Vec3 position;
+        Index vertex = kInvalidIndex;  // existing cage vertex, or none yet
+    };
+
+    Index nearest_vertex(Vec3 p, float radius) const;
     Index add_vertex_welded(Vec3 p);
     void add_face_outward(std::vector<Index> corners);
     void compact();
@@ -90,6 +115,8 @@ private:
     TriangleBVH reference_;
     Mesh mesh_;
     std::vector<Index> last_contour_;
+    std::vector<PenTap> pen_;
+    std::size_t pen_fixed_ = 1;  // leading pending taps whose order is fixed (2 when chaining)
 };
 
 struct Polyline {

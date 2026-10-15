@@ -73,6 +73,8 @@ int usage() {
         "  retopo-begin      start a retopology over the current sculpt\n"
         "  contour N VX VY VZ  stroke (p lines, then end) -> loop of N vertices, view dir V\n"
         "  strip WIDTH SEGMENTS  stroke (p lines, then end) -> quad strip\n"
+        "  tap X Y Z         quad pen: every 4th tap makes a quad, then each 2 more extend the strip\n"
+        "  tap-lift          end the quad-pen chain\n"
         "  retopo-relax N | retopo-apply L   relax, or replace the sculpt keeping L levels\n"
         "brush types: standard clay inflate smooth flatten pinch crease grab mask\n",
         stderr);
@@ -257,6 +259,16 @@ int run_sculpt(const std::string& in_path, const std::string& script_path, const
             }
             if (in.fail()) return fail(where() + "bad " + cmd + " arguments");
             points.clear();
+        } else if (cmd == "tap" || cmd == "tap-lift") {
+            if (!retopo) return fail(where() + "run retopo-begin first");
+            if (cmd == "tap-lift") {
+                retopo->quad_pen_lift();
+                continue;
+            }
+            Vec3 p;
+            if (!(in >> p.x >> p.y >> p.z)) return fail(where() + "expected 'tap X Y Z'");
+            auto r = retopo->quad_pen_tap(p);
+            if (!r) return fail(where() + r.error().message);
         } else if (cmd == "retopo-relax") {
             int n = 1;
             in >> n;

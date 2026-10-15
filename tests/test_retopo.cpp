@@ -281,3 +281,105 @@ TEST(seams_split_unwrap_charts) {
         }
     }
 }
+
+namespace {
+
+// A point on the unit sphere's top cap.
+Vec3 cap_point(float x, float z) { return {x, std::sqrt(1.0f - x * x - z * z), z}; }
+
+}  // namespace
+
+TEST(quad_pen_taps_build_chained_quads) {
+    const Mesh sphere = make_quad_sphere(5, 1.0f);
+    RetopoMesh r(sphere);
+    r.weld_radius = 0.03f;
+    const Vec3 a = cap_point(-0.1f, -0.1f), b = cap_point(0.1f, -0.1f);
+    const Vec3 c = cap_point(-0.1f, 0.1f), d = cap_point(0.1f, 0.1f);
+    // Tapped in a crossed (Z) order: the quad still goes round its corners.
+    for (const Vec3& p : {a, b, c}) {
+        auto t = r.quad_pen_tap(p);
+        REQUIRE(t.is_ok());
+        CHECK(!t.value().face_added);
+    }
+    CHECK_EQ(r.quad_pen_pending().size(), 3u);
+    auto t = r.quad_pen_tap(d);
+    REQUIRE(t.is_ok());
+    CHECK(t.value().face_added);
+    CHECK_EQ(t.value().pending, 2u);  // the chain continues from the c-d edge
+    REQUIRE(r.mesh().face_count() == 1u);
+    CHECK_NEAR(r.mesh().face_area(0), 0.04, 0.004);  // not a bowtie
+    const auto pending = r.quad_pen_pending();
+    REQUIRE(pending.size() == 2u);
+    CHECK(distance(pending[0], c) + distance(pending[1], d) < 1e-3f ||
+          distance(pending[0], d) + distance(pending[1], c) < 1e-3f);
+
+    // Two more taps extend the strip across the shared edge.
+    REQUIRE(r.quad_pen_tap(cap_point(0.1f, 0.3f)).is_ok());
+    t = r.quad_pen_tap(cap_point(-0.1f, 0.3f));
+    REQUIRE(t.is_ok());
+    CHECK(t.value().face_added);
+    CHECK_EQ(r.mesh().face_count(), 2u);
+    CHECK_EQ(r.mesh().vertex_count(), 6u);
+    CHECK_EQ(r.stats().boundary_edges, 6u);
+    CHECK(max_gap(r, sphere) < 1e-4);
+    for (std::size_t f = 0; f < r.mesh().face_count(); ++f) {
+        CHECK(dot(r.mesh().face_normal(f), r.normal_at(r.mesh().face_centroid(f))) > 0.5f);
+    }
+
+    // A tap onto a pending corner is rejected and the chain is kept.
+    CHECK(!r.quad_pen_tap(cap_point(0.1f, 0.3f)).is_ok());
+    CHECK_EQ(r.quad_pen_pending().size(), 2u);
+    r.quad_pen_lift();
+    CHECK(r.quad_pen_pending().empty());
+
+    // Re-tapping an existing quad, or a quad on an edge with two faces, is rejected at the 4th tap.
+    for (const Vec3& p : {a, b, d}) REQUIRE(r.quad_pen_tap(p).is_ok());
+    CHECK(!r.quad_pen_tap(c).is_ok());
+    CHECK_EQ(r.quad_pen_pending().size(), 3u);
+    r.quad_pen_lift();
+    for (const Vec3& p : {c, d, cap_point(0.1f, -0.3f)}) REQUIRE(r.quad_pen_tap(p).is_ok());
+    CHECK(!r.quad_pen_tap(cap_point(-0.1f, -0.3f)).is_ok());
+    CHECK_EQ(r.mesh().face_count(), 2u);
+    r.quad_pen_lift();
+
+    // A quad whose last edge closes onto the cage shares it, and the chain
+    // ends because that edge has no free side left.
+    const Vec3 g = cap_point(0.3f, -0.1f), h = cap_point(0.3f, 0.1f);
+    for (const Vec3& p : {g, h, d}) REQUIRE(r.quad_pen_tap(p).is_ok());
+    t = r.quad_pen_tap(b);
+    REQUIRE(t.is_ok());
+    CHECK(t.value().face_added);
+    CHECK_EQ(t.value().pending, 0u);
+    CHECK_EQ(r.mesh().face_count(), 3u);
+    CHECK_EQ(r.mesh().vertex_count(), 8u);
+    CHECK_EQ(r.stats().boundary_edges, 8u);
+    CHECK_EQ(r.stats().quads, 3u);
+}
+
+TEST(c_api_quad_pen) {
+    CruthDocument* doc = nullptr;
+    REQUIRE(cruth_document_create_sphere(4, 1.0f, &doc) == CRUTH_OK);
+    CruthRetopo* retopo = nullptr;
+    REQUIRE(cruth_retopo_begin(doc, &retopo) == CRUTH_OK);
+    const float s = 0.15f;
+    const CruthVec3 taps[4] = {{-s, 1, -s}, {s, 1, -s}, {s, 1, s}, {-s, 1, s}};
+    CruthQuadPenResult res{};
+    for (int i = 0; i < 3; ++i) {
+        CHECK(cruth_retopo_quad_pen_tap(retopo, taps[i], &res) == CRUTH_OK);
+        CHECK_EQ(res.pending, uint32_t(i + 1));
+    }
+    CruthVec3 pending[4];
+    CHECK_EQ(cruth_retopo_quad_pen_pending(retopo, pending, 4), 3u);
+    CHECK_EQ(cruth_retopo_quad_pen_pending(retopo, nullptr, 0), 3u);
+    CHECK(cruth_retopo_quad_pen_tap(retopo, taps[0], &res) == CRUTH_ERROR_INVALID_ARGUMENT);
+    CHECK_EQ(res.pending, 3u);
+    CHECK(cruth_retopo_quad_pen_tap(retopo, taps[3], &res) == CRUTH_OK);
+    CHECK(res.face_added);
+    CHECK_EQ(res.pending, 2u);
+    CHECK_EQ(cruth_retopo_stats(retopo).quads, 1u);
+    cruth_retopo_quad_pen_lift(retopo);
+    CHECK_EQ(cruth_retopo_quad_pen_pending(retopo, nullptr, 0), 0u);
+    CHECK(cruth_retopo_quad_pen_tap(nullptr, taps[0], nullptr) == CRUTH_ERROR_INVALID_ARGUMENT);
+    cruth_retopo_destroy(retopo);
+    cruth_document_destroy(doc);
+}

@@ -21,6 +21,8 @@ run(${CLI} decimate ${WORK}/remeshed.obj ${WORK}/low.obj --target 5000)
 run(${CLI} check ${WORK}/low.obj)
 run(${CLI} sculpt ${WORK}/base.obj ${RETOPO_SCRIPT} ${WORK}/retopo.obj)
 run(${CLI} check ${WORK}/retopo.obj)
+# Retopology editing tools; the result is an open patch, so it is not print-checked.
+run(${CLI} sculpt ${WORK}/base.obj ${RETOPO_TOOLS_SCRIPT} ${WORK}/retopo_tools.obj)
 run(${CLI} quadremesh ${WORK}/smooth.obj ${WORK}/quads.obj --faces 3000)
 run(${CLI} check ${WORK}/quads.obj)
 run(${CLI} subdivide ${WORK}/quads.obj ${WORK}/quads_sub.obj)

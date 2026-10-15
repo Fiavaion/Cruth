@@ -1,0 +1,14 @@
+# Retopology editing tools on the unit sphere, headless.
+# SPDX-License-Identifier: MIT
+retopo-begin
+
+# Quad pen: four taps make a quad, two more extend the strip across its last edge.
+tap -0.15 0.98 -0.15
+tap 0.15 0.98 -0.15
+tap 0.15 0.98 0.15
+tap -0.15 0.98 0.15
+tap 0.15 0.89 0.45
+tap -0.15 0.89 0.45
+tap-lift
+
+retopo-apply 1
