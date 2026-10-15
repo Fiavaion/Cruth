@@ -15,13 +15,13 @@ struct ContentView: View {
 
             HStack(alignment: .center) {
                 if leftHanded {
-                    BrushSettingsPanel(session: session)
+                    sidePanel
                     Spacer()
-                    BrushPalette(session: session)
+                    if session.mode == .sculpt { BrushPalette(session: session) }
                 } else {
-                    BrushPalette(session: session)
+                    if session.mode == .sculpt { BrushPalette(session: session) }
                     Spacer()
-                    BrushSettingsPanel(session: session)
+                    sidePanel
                 }
             }
             .padding(.horizontal, 12)
@@ -85,6 +85,13 @@ struct ContentView: View {
                     .font(.headline)
             }
 
+            Picker("Mode", selection: Binding(get: { session.mode }, set: { session.setMode($0) })) {
+                ForEach(WorkMode.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 240)
+            .disabled(session.isBusy)
+
             Spacer()
 
             topologyMenu
@@ -112,6 +119,14 @@ struct ContentView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
+    @ViewBuilder private var sidePanel: some View {
+        switch session.mode {
+        case .sculpt: BrushSettingsPanel(session: session)
+        case .guides: GuidesPanel(session: session)
+        case .retopo: RetopoPanel(session: session)
+        }
+    }
+
     /// Multires, voxel remesh and decimation (PRD S-01, S-02, S-04).
     private var topologyMenu: some View {
         Menu {
@@ -127,7 +142,10 @@ struct ContentView: View {
                 ForEach([2000, 5000, 10000, 20000], id: \.self) { faces in
                     Button("\(faces.formatted()) quads") { session.quadRemesh(faces: UInt64(faces)) }
                 }
+                Divider()
+                Text(session.guideStrokes.isEmpty ? "No guide strokes" : "\(session.guideStrokes.count) guide strokes")
             }
+            Toggle("Keep Sculpt Detail", isOn: $session.keepDetail)
             Menu("Decimate", systemImage: "triangle") {
                 Button("Keep 50%") { session.decimate(keeping: 0.5) }
                 Button("Keep 25%") { session.decimate(keeping: 0.25) }
@@ -270,5 +288,70 @@ struct MeshFile: FileDocument {
         case .data(let data): return FileWrapper(regularFileWithContents: data)
         case .folder(let url): return try FileWrapper(url: url, options: .immediate)
         }
+    }
+}
+
+/// Guide strokes for the quad remesher (PRD R-02).
+struct GuidesPanel: View {
+    @ObservedObject var session: SculptSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Guides").font(.headline)
+            Text("Draw where edge loops should run. Quad Remesh follows them.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Text("\(session.guideStrokes.count) strokes").monospacedDigit()
+            Button("Clear Guides", role: .destructive) { session.clearGuides() }
+                .disabled(session.guideStrokes.isEmpty)
+        }
+        .font(.subheadline)
+        .frame(width: 220, alignment: .leading)
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+/// Manual retopology over the sculpt (PRD T-01..T-06).
+struct RetopoPanel: View {
+    @ObservedObject var session: SculptSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Retopology").font(.headline)
+            Picker("Tool", selection: $session.retopoTool) {
+                ForEach(RetopoTool.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            switch session.retopoTool {
+            case .contour:
+                Text("Stroke across a form to add an edge loop.").font(.footnote).foregroundStyle(.secondary)
+                Stepper("Loop: \(session.loopVertices)", value: $session.loopVertices, in: 3...64)
+            case .strip:
+                Text("Stroke along a form to add a quad strip.").font(.footnote).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Width \(Double(session.stripWidth), format: .number.precision(.fractionLength(2)))")
+                    Slider(value: $session.stripWidth, in: 0.01...0.5)
+                }
+                Stepper("Segments: \(session.stripSegments)", value: $session.stripSegments, in: 1...64)
+            }
+            let s = session.retopoStats
+            Text("\(s.quads) quads · \(s.triangles + s.ngons) other · \(s.poles) poles")
+                .font(.footnote)
+                .monospacedDigit()
+            HStack {
+                Button("Relax") { session.relaxRetopo() }
+                Spacer()
+                Button("Cancel", role: .cancel) { session.cancelRetopo() }
+                Button("Apply") { session.applyRetopo() }
+                    .buttonStyle(.borderedProminent)
+            }
+            Toggle("Keep Sculpt Detail", isOn: $session.keepDetail)
+        }
+        .toggleStyle(.switch)
+        .font(.subheadline)
+        .frame(width: 240, alignment: .leading)
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 }

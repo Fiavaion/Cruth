@@ -316,3 +316,102 @@ TEST(quad_remesh_document_command_and_errors) {
     CHECK(!quad_remesh(make_cube(), o).is_ok());
     CHECK(!quad_remesh(Mesh{}, QuadRemeshOptions{}).is_ok());
 }
+
+namespace {
+
+// Mean and max distance from `from`'s vertices to `to`'s surface.
+std::pair<double, double> surface_gap(const Mesh& from, const Mesh& to) {
+    TriangleBVH bvh(to);
+    double sum = 0, worst = 0;
+    for (const auto& p : from.positions) {
+        auto cp = bvh.closest_point(p);
+        const double d = cp ? cp->distance : 1e9;
+        sum += d;
+        worst = std::max(worst, d);
+    }
+    return {sum / double(from.vertex_count()), worst};
+}
+
+}  // namespace
+
+TEST(quad_remesh_guide_strokes_steer_edge_flow) {
+    Mesh sphere = make_quad_sphere(4, 1.0f);
+    // A great circle tilted 35 degrees: without guidance the field follows the
+    // cube-sphere's own axes, not this loop.
+    std::vector<Vec3> stroke;
+    const float tilt = 0.6f;
+    for (int i = 0; i <= 96; ++i) {
+        const float t = 2.0f * std::numbers::pi_v<float> * float(i) / 96.0f;
+        stroke.push_back({std::cos(t), -std::sin(t) * std::sin(tilt), std::sin(t) * std::cos(tilt)});
+    }
+    auto misalignment = [&](const Mesh& m) {
+        double sum = 0;
+        int n = 0;
+        for (std::size_t f = 0; f < m.face_count(); ++f) {
+            auto fv = m.face(f);
+            for (std::size_t i = 0; i < fv.size(); ++i) {
+                const Vec3 a = m.positions[fv[i]], b = m.positions[fv[(i + 1) % fv.size()]], mid = (a + b) * 0.5f;
+                float best = 1e9f;
+                Vec3 tangent;
+                for (std::size_t k = 0; k + 1 < stroke.size(); ++k) {
+                    const Vec3 ab = stroke[k + 1] - stroke[k];
+                    const float t = std::clamp(dot(mid - stroke[k], ab) / dot(ab, ab), 0.0f, 1.0f);
+                    const float d = distance(stroke[k] + ab * t, mid);
+                    if (d < best) {
+                        best = d;
+                        tangent = normalize(ab);
+                    }
+                }
+                if (best > 0.06f) continue;
+                double angle = std::acos(std::min(1.0, double(std::abs(dot(normalize(b - a), tangent))))) * 180.0 / std::numbers::pi;
+                if (angle > 45) angle = 90 - angle;
+                sum += angle;
+                ++n;
+            }
+        }
+        return n ? sum / n : 90.0;
+    };
+    QuadRemeshOptions o;
+    o.target_faces = 800;
+    auto plain = quad_remesh(sphere, o);
+    o.guide_strokes = {stroke};
+    auto guided = quad_remesh(sphere, o);
+    REQUIRE(plain.is_ok() && guided.is_ok());
+    const double before = misalignment(plain.value()), after = misalignment(guided.value());
+    CHECK(after < 6.0);
+    CHECK(after < before * 0.5);
+}
+
+TEST(quad_remesh_keeps_sculpted_detail_as_multires) {
+    Document doc(make_quad_sphere(3, 1.0f));
+    REQUIRE(doc.subdivide(2).is_ok());
+    BrushSettings crease;
+    crease.type = BrushType::Crease;
+    crease.radius = 0.12f;
+    crease.strength = 1.0f;
+    crease.symmetry = {};
+    doc.begin_stroke(crease);
+    for (int i = 0; i <= 20; ++i) doc.add_stroke_sample({normalize(Vec3{-0.4f + 0.04f * float(i), 1, 0.2f}), 1});
+    doc.end_stroke();
+    const Mesh sculpt = doc.mesh();
+
+    QuadRemeshOptions o;
+    o.target_faces = 500;
+    REQUIRE(doc.quad_remesh(o, 0).is_ok());
+    const auto coarse = surface_gap(sculpt, doc.mesh());
+    REQUIRE(doc.undo());
+
+    REQUIRE(doc.quad_remesh(o, 3).is_ok());
+    CHECK_EQ(doc.level_count(), 4);
+    CHECK_EQ(doc.level(), 3);
+    const auto detailed = surface_gap(sculpt, doc.mesh());
+    // The finest level follows the sculpt far more closely than the bare remesh.
+    CHECK(detailed.second < coarse.second * 0.5);
+    CHECK(detailed.first < 0.004);
+    // The base is still the clean remesh, and the whole result is undoable.
+    CHECK(doc.set_level(0).is_ok());
+    CHECK(doc.mesh().face_count() < 600);
+    REQUIRE(doc.undo());
+    REQUIRE(doc.undo());
+    CHECK_EQ(doc.level_count(), 3);
+}

@@ -9,6 +9,12 @@
 #include "cruth/document.hpp"
 #include "cruth/mesh_io.hpp"
 #include "cruth/primitives.hpp"
+#include "cruth/retopo.hpp"
+
+struct CruthRetopo {
+    cruth::RetopoMesh retopo;
+    explicit CruthRetopo(const cruth::Mesh& reference) : retopo(reference) {}
+};
 
 struct CruthDocument {
     cruth::Document doc;
@@ -309,6 +315,127 @@ CruthStatus cruth_document_quad_remesh(CruthDocument* doc, uint64_t target_faces
         options.preserve_sharp = preserve_sharp;
         auto result = doc->doc.quad_remesh(options);
         return result ? CRUTH_OK : from_error(result.error());
+    });
+}
+
+CruthStatus cruth_document_quad_remesh_ex(CruthDocument* doc, const CruthQuadRemeshOptions* options) {
+    if (!doc || !options || options->target_faces < 8) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "target must be >= 8 faces");
+    if (options->guide_stroke_count && (!options->guide_points || !options->guide_stroke_sizes)) {
+        return fail(CRUTH_ERROR_INVALID_ARGUMENT, "guide strokes need points and sizes");
+    }
+    return guarded([&] {
+        cruth::QuadRemeshOptions o;
+        o.target_faces = static_cast<std::size_t>(options->target_faces);
+        o.preserve_sharp = options->preserve_sharp;
+        std::size_t offset = 0;
+        for (uint32_t s = 0; s < options->guide_stroke_count; ++s) {
+            std::vector<cruth::Vec3> stroke;
+            for (uint32_t i = 0; i < options->guide_stroke_sizes[s]; ++i) stroke.push_back(to_core(options->guide_points[offset + i]));
+            offset += options->guide_stroke_sizes[s];
+            if (stroke.size() >= 2) o.guide_strokes.push_back(std::move(stroke));
+        }
+        auto result = doc->doc.quad_remesh(o, options->detail_levels);
+        return result ? CRUTH_OK : from_error(result.error());
+    });
+}
+
+CruthStatus cruth_retopo_begin(CruthDocument* doc, CruthRetopo** out) {
+    if (!doc || !out) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    *out = nullptr;
+    return guarded([&] {
+        *out = new CruthRetopo(doc->doc.sculpt_reference());
+        return CRUTH_OK;
+    });
+}
+
+void cruth_retopo_destroy(CruthRetopo* retopo) { delete retopo; }
+
+namespace {
+std::vector<cruth::Vec3> to_points(const CruthVec3* pts, uint32_t count) {
+    std::vector<cruth::Vec3> out;
+    out.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) out.push_back(to_core(pts[i]));
+    return out;
+}
+}  // namespace
+
+CruthStatus cruth_retopo_add_strip(CruthRetopo* retopo, const CruthVec3* stroke, uint32_t count, float width,
+                                   int32_t segments) {
+    if (!retopo || !stroke) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        auto s = retopo->retopo.add_strip(to_points(stroke, count), width, segments);
+        return s ? CRUTH_OK : from_error(s.error());
+    });
+}
+
+CruthStatus cruth_retopo_add_contour(CruthRetopo* retopo, const CruthVec3* stroke, uint32_t count, int32_t loop_vertices,
+                                     CruthVec3 view_direction) {
+    if (!retopo || !stroke) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        auto r = retopo->retopo.add_contour(to_points(stroke, count), loop_vertices, to_core(view_direction));
+        return r ? CRUTH_OK : from_error(r.error());
+    });
+}
+
+CruthStatus cruth_retopo_add_quad(CruthRetopo* retopo, const CruthVec3 corners[4]) {
+    if (!retopo || !corners) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        auto s = retopo->retopo.add_quad({to_core(corners[0]), to_core(corners[1]), to_core(corners[2]), to_core(corners[3])});
+        return s ? CRUTH_OK : from_error(s.error());
+    });
+}
+
+void cruth_retopo_relax(CruthRetopo* retopo, int32_t iterations) {
+    if (retopo) guarded([&] {
+            retopo->retopo.relax(std::clamp(iterations, 0, 100));
+            return CRUTH_OK;
+        });
+}
+
+CruthRetopoStats cruth_retopo_stats(const CruthRetopo* retopo) {
+    CruthRetopoStats out{};
+    if (!retopo) return out;
+    const auto s = retopo->retopo.stats();
+    out.vertices = s.vertices;
+    out.quads = s.quads;
+    out.triangles = s.triangles;
+    out.ngons = s.ngons;
+    out.poles = s.poles;
+    out.boundary_edges = s.boundary_edges;
+    return out;
+}
+
+size_t cruth_retopo_copy_edges(const CruthRetopo* retopo, float* out, size_t float_capacity) {
+    if (!retopo) return 0;
+    return guarded_value<size_t>(0, [&] {
+        const cruth::Mesh& m = retopo->retopo.mesh();
+        std::vector<std::uint64_t> keys;
+        for (std::size_t f = 0; f < m.face_count(); ++f) {
+            auto fv = m.face(f);
+            for (std::size_t i = 0; i < fv.size(); ++i) {
+                cruth::Index a = fv[i], b = fv[(i + 1) % fv.size()];
+                if (a > b) std::swap(a, b);
+                keys.push_back((std::uint64_t(a) << 32) | b);
+            }
+        }
+        std::sort(keys.begin(), keys.end());
+        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+        const std::size_t room = out ? float_capacity / 6 : 0;
+        for (std::size_t e = 0; e < keys.size() && e < room; ++e) {
+            const cruth::Vec3 a = m.positions[keys[e] >> 32], b = m.positions[keys[e] & 0xFFFFFFFFu];
+            float* o = out + e * 6;
+            o[0] = a.x; o[1] = a.y; o[2] = a.z;
+            o[3] = b.x; o[4] = b.y; o[5] = b.z;
+        }
+        return keys.size();
+    });
+}
+
+CruthStatus cruth_retopo_apply(const CruthRetopo* retopo, CruthDocument* doc, int32_t detail_levels) {
+    if (!retopo || !doc) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        auto s = doc->doc.adopt_retopology(retopo->retopo.mesh(), detail_levels);
+        return s ? CRUTH_OK : from_error(s.error());
     });
 }
 

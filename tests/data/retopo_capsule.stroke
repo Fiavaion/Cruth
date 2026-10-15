@@ -1,0 +1,26 @@
+# Headless retopology of a stretched sphere: three contour loops bridged into
+# a tube, relaxed, then adopted with two multires levels of carried detail.
+retopo-begin
+contour 12 0 0 -1
+p -1.2 -0.4 0.6
+p 1.2 -0.4 0.6
+end
+contour 12 0 0 -1
+p -1.2 0.0 0.6
+p 1.2 0.0 0.6
+end
+contour 12 0 0 -1
+p -1.2 0.4 0.6
+p 1.2 0.4 0.6
+end
+retopo-relax 2
+retopo-apply 2
+
+# A guided quad remesh of the result, keeping one detail level.
+undo
+guide
+p -1 0.2 0
+p 0 0.25 1
+p 1 0.2 0
+end
+quadremesh 400 1

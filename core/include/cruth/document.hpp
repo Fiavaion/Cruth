@@ -58,6 +58,10 @@ public:
     const std::vector<Vec3>& normals() const { return sculptor_.normals(); }
     const std::vector<float>& mask() const { return sculptor_.mask(); }
 
+    // The most detailed version of the sculpt (top multires level), with any
+    // pending strokes folded in: the reference for retopology and baking.
+    const Mesh& sculpt_reference();
+
     // Replace the whole object (drops multires levels) as one undoable step.
     void set_mesh(Mesh mesh, std::string label);
 
@@ -77,7 +81,13 @@ public:
 
     // Topology commands; each replaces the object and resets multires.
     Result<VoxelRemeshStats> voxel_remesh(const VoxelRemeshOptions& options);
-    Result<QuadRemeshStats> quad_remesh(const QuadRemeshOptions& options);
+    // With detail_levels > 0 the result is subdivided that many times and the
+    // finest level projected onto the old sculpt, so detail carries over as
+    // multires levels on the new topology (PRD R-04, T-06).
+    Result<QuadRemeshStats> quad_remesh(const QuadRemeshOptions& options, int detail_levels = 0);
+    // Replaces the object with a new low-poly mesh (e.g. from RetopoMesh) and,
+    // as above, carries the sculpt over as `detail_levels` multires levels.
+    Status adopt_retopology(Mesh low, int detail_levels, std::string label = "Retopology");
     DecimateStats decimate(std::size_t target_triangles);
     RepairLog repair_for_print(const RepairOptions& options = {});
     PrintReport check_printability() const;
@@ -123,6 +133,7 @@ private:
     Snapshot snapshot();
     void restore(const Snapshot& state);
     void apply_state(State state, std::string label);
+    Status replace_keeping_detail(Mesh low, int detail_levels, std::string label);
     const TriangleBVH& bvh() const;
 
     MultiresStack multires_;

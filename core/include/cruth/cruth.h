@@ -162,6 +162,43 @@ CruthStatus cruth_document_decimate(CruthDocument* doc, uint64_t target_triangle
 /* Field-aligned quad remesh of the most detailed level (QuadriFlow). target_faces >= 8. */
 CruthStatus cruth_document_quad_remesh(CruthDocument* doc, uint64_t target_faces, bool preserve_sharp);
 
+typedef struct CruthQuadRemeshOptions {
+    uint64_t target_faces;
+    bool preserve_sharp;
+    int32_t detail_levels;              /* > 0: subdivide and reproject the sculpt as multires detail */
+    const CruthVec3* guide_points;      /* guide strokes, concatenated */
+    const uint32_t* guide_stroke_sizes; /* points per stroke */
+    uint32_t guide_stroke_count;
+} CruthQuadRemeshOptions;
+
+CruthStatus cruth_document_quad_remesh_ex(CruthDocument* doc, const CruthQuadRemeshOptions* options);
+
+/* Retopology (PRD T-01..T-06) ---------------------------------------------- */
+
+typedef struct CruthRetopo CruthRetopo;
+
+typedef struct CruthRetopoStats {
+    uint64_t vertices, quads, triangles, ngons, poles, boundary_edges;
+} CruthRetopoStats;
+
+/* Starts a retopology over the document's most detailed level. */
+CruthStatus cruth_retopo_begin(CruthDocument* doc, CruthRetopo** out);
+void cruth_retopo_destroy(CruthRetopo* retopo);
+CruthStatus cruth_retopo_add_strip(CruthRetopo* retopo, const CruthVec3* stroke, uint32_t count, float width,
+                                   int32_t segments);
+/* view_direction: the camera's forward vector when the stroke was drawn. */
+CruthStatus cruth_retopo_add_contour(CruthRetopo* retopo, const CruthVec3* stroke, uint32_t count, int32_t loop_vertices,
+                                     CruthVec3 view_direction);
+CruthStatus cruth_retopo_add_quad(CruthRetopo* retopo, const CruthVec3 corners[4]);
+void cruth_retopo_relax(CruthRetopo* retopo, int32_t iterations);
+CruthRetopoStats cruth_retopo_stats(const CruthRetopo* retopo);
+/* Edges as line segments for an overlay: 6 floats per edge. Returns the edge count;
+ * writes at most float_capacity / 6 edges. */
+size_t cruth_retopo_copy_edges(const CruthRetopo* retopo, float* out, size_t float_capacity);
+/* Replaces the document's object with the retopology (undoable) and carries the
+ * sculpt over as detail_levels multires levels. */
+CruthStatus cruth_retopo_apply(const CruthRetopo* retopo, CruthDocument* doc, int32_t detail_levels);
+
 /* Game asset (decimate + unwrap + bake) ------------------------------------ */
 
 typedef struct CruthAssetReport {

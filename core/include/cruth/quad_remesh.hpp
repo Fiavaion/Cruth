@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 
 #include "cruth/mesh.hpp"
 #include "cruth/result.hpp"
@@ -23,6 +24,13 @@ struct QuadRemeshOptions {
     bool minimum_cost_flow = false;  // slower, fewer singularities
     int seed = 0;
     int relax_iterations = 3;        // tangential relax + project passes on the result
+
+    // Guide strokes (PRD R-02): polylines on the surface along which edge
+    // loops should run. Nearby orientation-field directions are pulled toward
+    // each stroke's tangent; 4-fold symmetry means loops run along or across it.
+    std::vector<std::vector<Vec3>> guide_strokes;
+    float guide_radius = 0;      // influence radius; 0 = 1.5 target edge lengths
+    float guide_strength = 1.0f; // 0..1 at the stroke, falling off to 0 at the radius
     // Inputs above this are decimated first so memory and time stay bounded.
     std::size_t max_input_triangles = 300000;
 };

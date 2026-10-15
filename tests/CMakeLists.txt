@@ -4,6 +4,7 @@ add_executable(cruth_tests
   test_sculpt.cpp
   test_topology.cpp
   test_texture.cpp
+  test_retopo.cpp
   c_header_check.c
 )
 target_link_libraries(cruth_tests PRIVATE Cruth::core cruth_warnings)
@@ -17,6 +18,7 @@ if(TARGET cruth-cli)
     COMMAND ${CMAKE_COMMAND}
       -DCLI=$<TARGET_FILE:cruth-cli>
       -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/data/head_blockout.stroke
+      -DRETOPO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/data/retopo_capsule.stroke
       -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli_chain
       -DPYTHON=$<$<BOOL:${Python3_FOUND}>:${Python3_EXECUTABLE}>
       -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/tools/check_images.py

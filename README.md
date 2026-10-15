@@ -16,7 +16,8 @@ The PRD's phase 0 is to prove the C++ core headless before the UI grows. This re
 | Multires | Up to 8 Catmull-Clark levels; sculpt at any level, with edits propagated up and down; lockable level 0 (S-01) |
 | Voxel remesh | Closed, even quad surface at 8–512 voxels; merges overlapping parts, closes small holes, dissolves buried surfaces; multithreaded (S-02) |
 | Decimation | Quadric edge collapse to a target triangle count, boundary-preserving and manifold-safe (S-04) |
-| Quad remesh | Field-aligned all-quad remeshing (QuadriFlow, Boost-free with a single-solve min-cost flow), then relax, untangle and project; feeds multires directly (R-01, R-03 input cap) |
+| Quad remesh | Field-aligned all-quad remeshing (QuadriFlow, Boost-free with a single-solve min-cost flow), then relax, untangle and project; guide strokes steer edge loops (R-02); optionally keeps the sculpt as reprojected multires detail on the new topology (R-01, R-03 input cap, R-04) |
+| Retopology | Surface-snapped contour loops (view-plane slices, auto-bridged), quad strips, bridge, quad pen, relax, delete; poles/triangles/n-gons readout; apply back to the sculpt keeping detail (T-01–T-06, core) |
 | UVs | Automatic unwrap: normal-cone charts inside seam groups, LSCM via conjugate gradient, rotation-optimised packing with padding, UDIM tiles, distortion readout; OBJ `vt` import and export (U-01, U-04, U-06 data) |
 | Baking | Normal (tangent and object space), height, vector displacement and AO from a high mesh onto a UV'd low mesh; cage ray casting, dilation padding, multithreaded; 8/16-bit PNG and half/float EXR (ZIP) writers with no dependencies (K-01, K-02) |
 | Game asset | One command: decimate the top multires level, unwrap, bake, and write OBJ plus maps |
@@ -26,7 +27,7 @@ The PRD's phase 0 is to prove the C++ core headless before the UI grows. This re
 | 3D-print | Check for holes, non-manifold edges and vertices, winding, degenerate faces, self-intersections, shells, volume and size; repair by welding, splitting non-manifold vertices, re-winding, filling holes and turning shells outward (X-01, X-02) |
 | C API | `core/include/cruth/cruth.h`: the exception-free boundary every shell uses |
 | CLI | `cruth-cli`: create, sculpt from a stroke script (including multires levels), subdivide, voxel and quad remesh, decimate, unwrap, bake, check, repair and convert, all headless |
-| iPad shell | SwiftUI and Metal viewport; raw Apple Pencil input with pressure and coalesced touches; finger orbit, pan and zoom; two- and three-finger tap for undo and redo; Pencil double-tap and squeeze; hover brush cursor; multires level stepper; topology menu (subdivide, voxel remesh, quad remesh, decimate) running in the background; Export Game Asset (bakes in the background, saves a folder to Files); Files import and export; print check sheet |
+| iPad shell | SwiftUI and Metal viewport; raw Apple Pencil input with pressure and coalesced touches; finger orbit, pan and zoom; two- and three-finger tap for undo and redo; Pencil double-tap and squeeze; hover brush cursor; multires level stepper; topology menu (subdivide, voxel remesh, quad remesh, decimate) running in the background; Guides mode (draw edge-flow guides for quad remesh) and Retopo mode (contour and strip tools with a live overlay, relax, apply keeping detail); Export Game Asset (bakes in the background, saves a folder to Files); Files import and export; print check sheet |
 
 ## Repository layout
 

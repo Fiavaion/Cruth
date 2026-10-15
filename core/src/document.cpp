@@ -4,6 +4,7 @@
 #include "cruth/bake.hpp"
 #include "cruth/mesh_io.hpp"
 #include "cruth/primitives.hpp"
+#include "cruth/reproject.hpp"
 #include "cruth/uv.hpp"
 
 namespace cruth {
@@ -130,14 +131,53 @@ Result<VoxelRemeshStats> Document::voxel_remesh(const VoxelRemeshOptions& option
     return stats;
 }
 
-Result<QuadRemeshStats> Document::quad_remesh(const QuadRemeshOptions& options) {
+Status Document::replace_keeping_detail(Mesh low, int detail_levels, std::string label) {
+    if (detail_levels < 0 || detail_levels >= MultiresStack::kMaxLevels) {
+        return Error{ErrorCode::InvalidArgument, "detail levels must be 0.." + std::to_string(MultiresStack::kMaxLevels - 1)};
+    }
+    commit_level();
+    const Mesh& sculpt = multires_.level(multires_.top());
+    State next{MultiresStack(std::move(low)), 0};
+    next.stack.set_base_locked(multires_.base_locked());
+    if (detail_levels > 0) {
+        for (int i = 0; i < detail_levels; ++i) {
+            auto added = next.stack.add_level();
+            if (!added) return added;
+        }
+        // Project the finest level onto the old sculpt. The base stays as
+        // given; the levels in between follow by restriction.
+        Mesh top = next.stack.level(next.stack.top());
+        const TriangleBVH target(sculpt);
+        project_onto(top, target, 0.05f * length(sculpt.bounds().size()));
+        const bool locked = next.stack.base_locked();
+        next.stack.set_base_locked(true);
+        next.stack.set_positions(next.stack.top(), top.positions);
+        next.stack.set_base_locked(locked);
+        next.level = next.stack.top();
+    }
+    apply_state(std::move(next), std::move(label));
+    return Status::ok();
+}
+
+Result<QuadRemeshStats> Document::quad_remesh(const QuadRemeshOptions& options, int detail_levels) {
     commit_level();
     QuadRemeshStats stats;
     // Remesh the most detailed level so fine forms guide the field.
     auto result = cruth::quad_remesh(multires_.level(multires_.top()), options, &stats);
     if (!result) return result.error();
-    set_mesh(std::move(result).value(), "Quad remesh");
+    auto s = replace_keeping_detail(std::move(result).value(), detail_levels, "Quad remesh");
+    if (!s) return s.error();
     return stats;
+}
+
+const Mesh& Document::sculpt_reference() {
+    commit_level();
+    return multires_.level(multires_.top());
+}
+
+Status Document::adopt_retopology(Mesh low, int detail_levels, std::string label) {
+    if (low.face_count() == 0 || !low.is_valid()) return Error{ErrorCode::InvalidArgument, "retopology mesh is empty or invalid"};
+    return replace_keeping_detail(std::move(low), detail_levels, std::move(label));
 }
 
 DecimateStats Document::decimate(std::size_t target_triangles) {

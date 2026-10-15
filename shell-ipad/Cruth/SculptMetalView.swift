@@ -24,6 +24,12 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     private var strokeTouch: UITouch?
     private var grabPlane: (point: SIMD3<Float>, normal: SIMD3<Float>)?
 
+    // Guides and retopology draw as overlays, re-projected when the camera moves.
+    private let guideLayer = CAShapeLayer()
+    private let retopoLayer = CAShapeLayer()
+    private let pathLayer = CAShapeLayer()
+    private var pathPoints: [SIMD3<Float>] = []
+
     init(session: SculptSession) {
         self.session = session
         super.init(frame: .zero, device: MTLCreateSystemDefaultDevice())
@@ -41,6 +47,17 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         installGestures()
         addInteraction(makePencilInteraction())
 
+        for (overlay, color, width) in [(guideLayer, UIColor.systemOrange, 3.0),
+                                        (retopoLayer, UIColor.systemTeal, 1.5),
+                                        (pathLayer, UIColor.systemYellow, 2.0)] {
+            overlay.fillColor = UIColor.clear.cgColor
+            overlay.strokeColor = color.withAlphaComponent(0.9).cgColor
+            overlay.lineWidth = CGFloat(width)
+            overlay.lineJoin = .round
+            overlay.lineCap = .round
+            layer.addSublayer(overlay)
+        }
+
         cursor.fillColor = UIColor.clear.cgColor
         cursor.strokeColor = UIColor.white.withAlphaComponent(0.8).cgColor
         cursor.lineWidth = 1.5
@@ -56,7 +73,39 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     /// Called by SwiftUI when the session publishes a change.
     func sessionDidChange() {
         orbitGesture.isEnabled = !session.fingerSculpting
+        refreshOverlay()
         setNeedsDisplay()
+    }
+
+    /// Projects guides and the retopology cage into the view. Occlusion is not
+    /// tested yet; strokes behind the model show through.
+    func refreshOverlay() {
+        guard let renderer else { return }
+        let size = bounds.size
+        func polyline(_ points: [SIMD3<Float>], into path: UIBezierPath) {
+            var started = false
+            for p in points {
+                guard let q = renderer.camera.project(p, viewSize: size) else {
+                    started = false
+                    continue
+                }
+                if started { path.addLine(to: q) } else { path.move(to: q) }
+                started = true
+            }
+        }
+        let guides = UIBezierPath()
+        for stroke in session.guideStrokes { polyline(stroke, into: guides) }
+        let cage = UIBezierPath()
+        let edges = session.retopoEdges
+        for i in stride(from: 0, to: edges.count - 1, by: 2) { polyline([edges[i], edges[i + 1]], into: cage) }
+        let live = UIBezierPath()
+        polyline(pathPoints, into: live)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        guideLayer.path = guides.cgPath
+        retopoLayer.path = cage.cgPath
+        pathLayer.path = live.cgPath
+        CATransaction.commit()
     }
 
     // MARK: Gestures
@@ -112,6 +161,7 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     @objc private func handleOrbit(_ g: UIPanGestureRecognizer) {
         let t = g.translation(in: self)
         g.setTranslation(.zero, in: self)
+        defer { refreshOverlay() }
         renderer?.camera.orbit(dx: Float(t.x), dy: Float(t.y))
         setNeedsDisplay()
     }
@@ -119,11 +169,13 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     @objc private func handlePan(_ g: UIPanGestureRecognizer) {
         let t = g.translation(in: self)
         g.setTranslation(.zero, in: self)
+        defer { refreshOverlay() }
         renderer?.camera.pan(dx: Float(t.x), dy: Float(t.y), viewHeight: Float(bounds.height))
         setNeedsDisplay()
     }
 
     @objc private func handlePinch(_ g: UIPinchGestureRecognizer) {
+        defer { refreshOverlay() }
         renderer?.camera.zoom(by: Float(g.scale))
         g.scale = 1
         setNeedsDisplay()
@@ -178,7 +230,8 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         guard strokeTouch == nil, let touch = touches.first(where: sculpts) else { return }
         strokeTouch = touch
         grabPlane = nil
-        session.beginStroke()
+        pathPoints.removeAll()
+        if session.mode == .sculpt { session.beginStroke() }
         addSamples(for: touch, event: event)
     }
 
@@ -202,7 +255,15 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     }
 
     private func finishStroke() {
-        session.endStroke()
+        if session.mode == .sculpt {
+            session.endStroke()
+        } else {
+            // Guide or retopology stroke: hand the surface path to the session.
+            let points = pathPoints
+            pathPoints.removeAll()
+            session.completePath(points, viewDirection: renderer?.camera.forward ?? SIMD3(0, 0, -1))
+            refreshOverlay()
+        }
         strokeTouch = nil
         grabPlane = nil
         cursor.isHidden = true
@@ -212,6 +273,14 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     private func addSamples(for touch: UITouch, event: UIEvent?) {
         guard let renderer else { return }
         let samples = event?.coalescedTouches(for: touch) ?? [touch]
+        if session.mode != .sculpt {
+            for sample in samples {
+                let ray = renderer.camera.ray(through: sample.preciseLocation(in: self), viewSize: bounds.size)
+                if let hit = session.raycast(origin: ray.origin, direction: ray.direction) { pathPoints.append(hit.position) }
+            }
+            refreshOverlay()
+            return
+        }
         for sample in samples {
             let point = sample.preciseLocation(in: self)
             let ray = renderer.camera.ray(through: point, viewSize: bounds.size)

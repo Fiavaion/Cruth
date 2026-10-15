@@ -18,6 +18,9 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 - [x] Voxel remesh, CPU reference: per-shell signed distance, CSG union, row-wise bit-parallel flood fill, surface nets, manifold repair, relax and project, multithreaded (S-02)
 - [x] Decimation by quadric edge collapse (S-04)
 - [x] Quad remesh: QuadriFlow vendored without Boost or external processes; large flow problems solved by one capacity-scaling min-cost max-flow with a bypass arc (5.7x faster than lemon's preflow + network simplex); relax, untangle and project post-pass; Document, C API, CLI and iPad menu (R-01, R-03 input cap)
+- [x] Guide strokes steer the quad remesher's orientation field: mean edge misalignment along a tilted loop drops from 19.7° to 2.8° (R-02)
+- [x] Remesh keeping detail: subdivide the new base and project the finest level onto the old sculpt, so detail survives as multires (R-04, T-06)
+- [x] Manual retopology core: view-plane contour loops with auto-bridging, strips, bridge, quad pen, surface-snapped relax, delete, stats, adopt back into the Document; C API, CLI scripts and an iPad Retopo mode (T-01 to T-03, T-05 stats, T-06)
 - [x] OBJ, STL and PLY I/O (P-06 and P-07, geometry only)
 - [x] Print check and repair, including self-intersections and non-manifold vertex splitting (X-01, X-02)
 - [x] Automatic UVs: charts, LSCM (conjugate gradient), packing with padding, UDIM, distortion and flip metrics; OBJ UV I/O (U-01, U-04, U-06 data)
@@ -47,6 +50,7 @@ PRD target: 512³ in ≤ 1 s on M4 and ≤ 3 s on A14, through the Metal compute
 - Remesh projection can leave 1–3 self-intersecting triangle pairs at sharp creases at very high resolution.
 - Multires detail is stored in object space, so detail does not rotate with large lower-level edits. Tangent-space detail is needed.
 - Remesh, decimate and subdivide run on the main thread in the iPad shell; only Export Game Asset runs in the background. Background Tasks with Live Activities (R-03) are not wired yet.
+- The iPad overlays for guides and retopology are drawn without occlusion, so strokes behind the model show through.
 - Quad remesh leaves a few dozen folded quad pairs on sharp crease strokes narrower than one quad (47 at 20k on the test head; none on smooth forms). The aggressive-SAT flip repair is compiled out because it needs an external solver.
 - The baker's tangent frame is per triangle, not MikkTSpace, so normal maps can show faint seams in engines that expect MikkTSpace.
 - UV packing is shelf-based on chart bounding boxes: about 35% of a tile is covered on organic shapes. Better packing is P1 (U-04).
@@ -54,8 +58,8 @@ PRD target: 512³ in ≤ 1 s on M4 and ≤ 3 s on A14, through the Metal compute
 
 ### Next, in dependency order
 
-1. **Guide strokes** that constrain the quad remesher's orientation field (R-02), and reprojecting multires detail onto a remeshed base (R-04, T-06).
-2. **Manual retopology** core operations (T-01 to T-03), then the reference asset plus the acceptance chain in CI with timings per commit.
+1. **Reference asset plus the acceptance chain in CI** with timings per commit (the phase-0 exit gate).
+2. Retopology polish: quad-pen tap-tap-lift input in the shell, insert/slide loop, merge, symmetry, n-gon/pole warnings in the overlay (T-03, T-05), and Pencil Pro barrel roll for loop count (I-02).
 3. MikkTSpace tangents, curvature and cavity bakes, better chart packing, seam painting (U-02).
 4. Tangent-space multires detail and sparse on-disk levels, dyntopo (S-03), Metal compute paths for remesh and bake (K-03).
 

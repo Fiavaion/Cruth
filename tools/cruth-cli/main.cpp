@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -20,6 +21,7 @@
 #include "cruth/primitives.hpp"
 #include "cruth/print_check.hpp"
 #include "cruth/quad_remesh.hpp"
+#include "cruth/retopo.hpp"
 #include "cruth/subdivide.hpp"
 #include "cruth/uv.hpp"
 #include "cruth/voxel_remesh.hpp"
@@ -64,7 +66,14 @@ int usage() {
         "  lock-base on|off  keep level 0 fixed when finer levels change\n"
         "  remesh [N]        voxel remesh at resolution N\n"
         "  decimate N        reduce to N triangles\n"
-        "  quadremesh N      field-aligned quad remesh to about N faces\n"
+        "  quadremesh N [L]  field-aligned quad remesh to about N faces, keeping the\n"
+        "                    sculpt as L multires levels; uses any guide strokes\n"
+        "  guide             start a guide stroke (p lines, then end) for quadremesh\n"
+        "  guides-clear\n"
+        "  retopo-begin      start a retopology over the current sculpt\n"
+        "  contour N VX VY VZ  stroke (p lines, then end) -> loop of N vertices, view dir V\n"
+        "  strip WIDTH SEGMENTS  stroke (p lines, then end) -> quad strip\n"
+        "  retopo-relax N | retopo-apply L   relax, or replace the sculpt keeping L levels\n"
         "brush types: standard clay inflate smooth flatten pinch crease grab mask\n",
         stderr);
     return 64;
@@ -207,6 +216,15 @@ int run_sculpt(const std::string& in_path, const std::string& script_path, const
     BrushSettings brush;
     std::string raw;
     int line_no = 0, strokes = 0;
+    // A stroke's samples feed sculpting, a guide or a retopology tool.
+    enum class Pending { Sculpt, Guide, Contour, Strip } pending = Pending::Sculpt;
+    std::vector<Vec3> points;
+    std::vector<std::vector<Vec3>> guides;
+    std::unique_ptr<RetopoMesh> retopo;
+    int contour_count = 0;
+    Vec3 contour_view;
+    float strip_width = 0;
+    int strip_segments = 0;
     while (std::getline(script, raw)) {
         ++line_no;
         auto hash = raw.find('#');
@@ -219,17 +237,65 @@ int run_sculpt(const std::string& in_path, const std::string& script_path, const
         if (cmd == "brush") {
             if (!parse_brush(in, brush, error)) return fail(where() + error);
         } else if (cmd == "stroke") {
+            pending = Pending::Sculpt;
             doc.begin_stroke(brush);
+        } else if (cmd == "guide") {
+            pending = Pending::Guide;
+            points.clear();
+        } else if (cmd == "guides-clear") {
+            guides.clear();
+        } else if (cmd == "retopo-begin") {
+            retopo = std::make_unique<RetopoMesh>(doc.sculpt_reference());
+        } else if (cmd == "contour" || cmd == "strip") {
+            if (!retopo) return fail(where() + "run retopo-begin first");
+            if (cmd == "contour") {
+                in >> contour_count >> contour_view.x >> contour_view.y >> contour_view.z;
+                pending = Pending::Contour;
+            } else {
+                in >> strip_width >> strip_segments;
+                pending = Pending::Strip;
+            }
+            if (in.fail()) return fail(where() + "bad " + cmd + " arguments");
+            points.clear();
+        } else if (cmd == "retopo-relax") {
+            int n = 1;
+            in >> n;
+            if (!retopo) return fail(where() + "run retopo-begin first");
+            retopo->relax(n);
+        } else if (cmd == "retopo-apply") {
+            int levels = 0;
+            in >> levels;
+            if (!retopo) return fail(where() + "run retopo-begin first");
+            const RetopoStats rs = retopo->stats();
+            std::printf("retopology: %zu quads, %zu triangles, %zu n-gons, %zu poles\n", rs.quads, rs.triangles, rs.ngons, rs.poles);
+            auto s = doc.adopt_retopology(retopo->mesh(), levels);
+            if (!s) return fail(where() + s.error().message);
+            retopo.reset();
         } else if (cmd == "p") {
             StrokeSample s;
             in >> s.position.x >> s.position.y >> s.position.z;
             if (in.fail()) return fail(where() + "expected 'p X Y Z [pressure]'");
             if (!(in >> s.pressure)) s.pressure = 1.0f;
+            if (pending != Pending::Sculpt) {
+                points.push_back(s.position);
+                continue;
+            }
             if (!doc.in_stroke()) return fail(where() + "sample outside a stroke");
             doc.add_stroke_sample(s);
         } else if (cmd == "end") {
-            doc.end_stroke();
-            ++strokes;
+            if (pending == Pending::Guide) {
+                guides.push_back(points);
+            } else if (pending == Pending::Contour) {
+                auto r = retopo->add_contour(points, contour_count, contour_view);
+                if (!r) return fail(where() + r.error().message);
+            } else if (pending == Pending::Strip) {
+                auto r = retopo->add_strip(points, strip_width, strip_segments);
+                if (!r) return fail(where() + r.error().message);
+            } else {
+                doc.end_stroke();
+                ++strokes;
+            }
+            pending = Pending::Sculpt;
         } else if (cmd == "undo") {
             doc.undo();
         } else if (cmd == "redo") {
@@ -256,7 +322,10 @@ int run_sculpt(const std::string& in_path, const std::string& script_path, const
         } else if (cmd == "quadremesh") {
             QuadRemeshOptions o;
             if (!(in >> o.target_faces) || o.target_faces < 8) return fail(where() + "expected 'quadremesh N' with N >= 8");
-            auto r = doc.quad_remesh(o);
+            int levels = 0;
+            in >> levels;
+            o.guide_strokes = guides;
+            auto r = doc.quad_remesh(o, levels);
             if (!r) return fail(where() + r.error().message);
         } else if (cmd == "decimate") {
             std::size_t target = 0;

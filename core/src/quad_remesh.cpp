@@ -5,6 +5,7 @@
 #include <exception>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "cruth/bvh.hpp"
 #include "cruth/decimate.hpp"
@@ -16,6 +17,83 @@
 #include "parametrizer.hpp"
 
 namespace cruth {
+
+namespace {
+
+// Orientation constraints from guide strokes on the finest hierarchy level.
+// QuadriFlow works in a normalised frame, so strokes are mapped into it.
+void apply_guides(qflow::Parametrizer& field, const QuadRemeshOptions& options) {
+    struct Segment {
+        Eigen::Vector3d a, b;
+    };
+    std::vector<Segment> segments;
+    const Eigen::Vector3d offset = field.normalize_offset;
+    const double s = field.normalize_scale;
+    for (const auto& stroke : options.guide_strokes) {
+        for (std::size_t i = 0; i + 1 < stroke.size(); ++i) {
+            Eigen::Vector3d a(stroke[i].x, stroke[i].y, stroke[i].z), b(stroke[i + 1].x, stroke[i + 1].y, stroke[i + 1].z);
+            a = (a - offset) / s;
+            b = (b - offset) / s;
+            if ((b - a).squaredNorm() > 1e-20) segments.push_back({a, b});
+        }
+    }
+    if (segments.empty()) return;
+    const double radius = options.guide_radius > 0 ? options.guide_radius / s : 1.5 * field.scale;
+    const double strength = std::clamp(double(options.guide_strength), 0.0, 1.0);
+
+    // Hash segments into cells of size `radius` so each vertex checks a few.
+    auto cell = [&](const Eigen::Vector3d& p) {
+        return Eigen::Vector3i(int(std::floor(p.x() / radius)), int(std::floor(p.y() / radius)), int(std::floor(p.z() / radius)));
+    };
+    auto key = [](const Eigen::Vector3i& c) {
+        return (std::uint64_t(std::uint32_t(c.x()) & 0x1FFFFF) << 42) | (std::uint64_t(std::uint32_t(c.y()) & 0x1FFFFF) << 21) |
+               std::uint64_t(std::uint32_t(c.z()) & 0x1FFFFF);
+    };
+    std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> grid;
+    for (std::uint32_t k = 0; k < segments.size(); ++k) {
+        const Eigen::Vector3d lo = segments[k].a.cwiseMin(segments[k].b), hi = segments[k].a.cwiseMax(segments[k].b);
+        const Eigen::Vector3i c0 = cell(lo), c1 = cell(hi);
+        for (int x = c0.x(); x <= c1.x(); ++x)
+            for (int y = c0.y(); y <= c1.y(); ++y)
+                for (int z = c0.z(); z <= c1.z(); ++z) grid[key({x, y, z})].push_back(k);
+    }
+
+    qflow::Hierarchy& h = field.hierarchy;
+    const Eigen::MatrixXd& V = h.mV[0];
+    const Eigen::MatrixXd& N = h.mN[0];
+    for (Eigen::Index i = 0; i < V.cols(); ++i) {
+        const Eigen::Vector3d p = V.col(i);
+        const Eigen::Vector3i c = cell(p);
+        double best = radius;
+        Eigen::Vector3d dir = Eigen::Vector3d::Zero();
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                for (int z = -1; z <= 1; ++z) {
+                    auto it = grid.find(key({c.x() + x, c.y() + y, c.z() + z}));
+                    if (it == grid.end()) continue;
+                    for (std::uint32_t k : it->second) {
+                        const Eigen::Vector3d ab = segments[k].b - segments[k].a;
+                        const double t = std::clamp((p - segments[k].a).dot(ab) / ab.squaredNorm(), 0.0, 1.0);
+                        const double d = (segments[k].a + ab * t - p).norm();
+                        if (d < best) {
+                            best = d;
+                            dir = ab;
+                        }
+                    }
+                }
+        if (dir.squaredNorm() == 0) continue;
+        const Eigen::Vector3d n = N.col(i);
+        Eigen::Vector3d q = dir - n * n.dot(dir);
+        if (q.squaredNorm() < 1e-20) continue;
+        const double falloff = 1.0 - best / radius;
+        const double w = strength * falloff * falloff;
+        if (w <= h.mCQw[0][i]) continue;  // keep stronger constraints (e.g. boundaries)
+        h.mCQ[0].col(i) = q.normalized();
+        h.mCQw[0][i] = w;
+    }
+}
+
+}  // namespace
 
 Result<Mesh> quad_remesh(const Mesh& input, const QuadRemeshOptions& options, QuadRemeshStats* stats) {
     if (input.face_count() == 0) return Error{ErrorCode::InvalidArgument, "quad remesh: empty mesh"};
@@ -51,9 +129,9 @@ Result<Mesh> quad_remesh(const Mesh& input, const QuadRemeshOptions& options, Qu
 
         // The same sequence as QuadriFlow's command-line tool.
         field->Initialize(int(options.target_faces));
+        field->hierarchy.clearConstraints();
         if (options.preserve_boundary) {
             qflow::Hierarchy& h = field->hierarchy;
-            h.clearConstraints();
             for (std::uint32_t i = 0; i < 3 * h.mF.cols(); ++i) {
                 if (h.mE2E[i] != -1) continue;
                 const std::uint32_t i0 = h.mF(i % 3, i / 3), i1 = h.mF((i + 1) % 3, i / 3);
@@ -66,8 +144,9 @@ Result<Mesh> quad_remesh(const Mesh& input, const QuadRemeshOptions& options, Qu
                 h.mCQ[0].col(i0) = h.mCQ[0].col(i1) = edge;
                 h.mCQw[0][i0] = h.mCQw[0][i1] = h.mCOw[0][i0] = h.mCOw[0][i1] = 1.0;
             }
-            h.propagateConstraints();
         }
+        if (!options.guide_strokes.empty()) apply_guides(*field, options);
+        field->hierarchy.propagateConstraints();
         qflow::Optimizer::optimize_orientations(field->hierarchy);
         field->ComputeOrientationSingularities();
         if (field->flag_adaptive_scale) field->EstimateSlope();

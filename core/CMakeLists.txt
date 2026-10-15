@@ -14,6 +14,8 @@ add_library(cruth_core STATIC
   src/print_check.cpp
   src/quad_remesh.cpp
   src/raycast.cpp
+  src/reproject.cpp
+  src/retopo.cpp
   src/sculpt.cpp
   src/subdivide.cpp
   src/uv.cpp
