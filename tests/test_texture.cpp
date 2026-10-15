@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "cruth/bake.hpp"
+#include "cruth/bvh.hpp"
 #include "cruth/document.hpp"
 #include "cruth/image_io.hpp"
 #include "cruth/mesh_io.hpp"
@@ -423,6 +424,80 @@ TEST(bake_tangent_normal_decodes_to_object_normal_like_an_engine) {
         CHECK(worst_degrees < 0.5f);
         CHECK(max_red > 0.1f);    // the test really tilts along u ...
         CHECK(max_green > 0.1f);  // ... and along v
+    }
+}
+
+// Vector displacement uses an orthonormal unit frame (see bake.hpp): decoding it must give back the
+// offset from the low surface point to the high hit, and its z must equal the height map.
+TEST(bake_vdm_decodes_to_the_hit_offset_in_a_unit_frame) {
+    Mesh high = make_quad_sphere(4, 1.0f);
+    for (auto& p : high.positions) {
+        p = p * (1.0f + 0.06f * std::sin(5.0f * p.x + 1.0f) * std::cos(4.0f * p.y + 2.0f * p.z));
+    }
+    const Mesh low = make_quad_sphere(1, 1.0f);
+    UnwrapOptions uo;
+    uo.resolution = 128;
+    auto unwrapped = auto_unwrap(low, uo);
+    REQUIRE(unwrapped.is_ok());
+    const TriangleBVH bvh(high);
+    constexpr float kReach = 0.4f;
+
+    for (bool mirror : {false, true}) {
+        UVSet uv = unwrapped.value();
+        if (mirror) {
+            for (Vec2& t : uv.uvs) t.x = 1.0f - t.x;
+        }
+        const BakeMap maps[] = {BakeMap::VectorDisplacement, BakeMap::Height};
+        constexpr int kRes = 128;
+        auto baked = bake(low, uv, high, maps, {.resolution = kRes, .max_distance = kReach, .padding = 0});
+        REQUIRE(baked.is_ok());
+        auto tangents = compute_tangents(low, uv);
+        REQUIRE(tangents.is_ok());
+        const auto normals = low.vertex_normals();
+        const Image& vdm = baked.value()[0].image;
+        const Image& height = baked.value()[1].image;
+
+        int checked = 0;
+        float worst_offset = 0, worst_height = 0, max_tangential = 0;
+        std::size_t t = 0;
+        for (std::size_t f = 0; f < low.face_count(); ++f) {
+            const auto fv = low.face(f);
+            for (std::size_t i = 1; i + 1 < fv.size(); ++i, ++t) {
+                const std::size_t c[3] = {0, i, i + 1};
+                const Vec2 u[3] = {uv.corner(low, f, c[0]), uv.corner(low, f, c[1]), uv.corner(low, f, c[2])};
+                const float area = cross(u[1] - u[0], u[2] - u[0]);
+                if (std::abs(area) < 1e-12f) continue;
+                for (int y = 0; y < kRes; y += 2) {
+                    for (int x = 0; x < kRes; x += 2) {
+                        const Vec2 q{(float(x) + 0.5f) / kRes, 1.0f - (float(y) + 0.5f) / kRes};
+                        const float b1 = cross(q - u[0], u[2] - u[0]) / area;
+                        const float b2 = cross(u[1] - u[0], q - u[0]) / area;
+                        const float b0 = 1 - b1 - b2;
+                        if (std::min({b0, b1, b2}) < 0.05f) continue;
+                        const Vec3 p = low.positions[fv[c[0]]] * b0 + low.positions[fv[c[1]]] * b1 +
+                                       low.positions[fv[c[2]]] * b2;
+                        const Vec3 n = normalize(normals[fv[c[0]]] * b0 + normals[fv[c[1]]] * b1 + normals[fv[c[2]]] * b2);
+                        auto hit = bvh.raycast(p + n * kReach, -n, 2.0f * kReach);
+                        if (!hit) continue;
+                        const Vec3 vT = tangents.value().tangent[t * 3] * b0 + tangents.value().tangent[t * 3 + 1] * b1 +
+                                        tangents.value().tangent[t * 3 + 2] * b2;
+                        const std::size_t nearest = b0 >= b1 && b0 >= b2 ? 0 : (b1 >= b2 ? 1 : 2);
+                        const Vec3 T = normalize(vT - n * dot(n, vT));
+                        const Vec3 B = cross(n, T) * tangents.value().sign[t * 3 + nearest];
+                        const Vec3 d{vdm.at(x, y, 0), vdm.at(x, y, 1), vdm.at(x, y, 2)};
+                        const Vec3 decoded = T * d.x + B * d.y + n * d.z;
+                        worst_offset = std::max(worst_offset, length(decoded - (hit->position - p)));
+                        worst_height = std::max(worst_height, std::abs(d.z - height.at(x, y, 0)));
+                        max_tangential = std::max(max_tangential, std::max(std::abs(d.x), std::abs(d.y)));
+                        ++checked;
+                    }
+                }
+            }
+        }
+        CHECK(checked > 300);
+        CHECK(worst_offset < 1e-3f);
+        CHECK(worst_height < 1e-4f);
+        CHECK(max_tangential < 1e-3f);  // rays run along the normal, so the offset has no tangent part
     }
 }
 

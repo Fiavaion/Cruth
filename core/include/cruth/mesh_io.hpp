@@ -36,6 +36,9 @@ std::string write_ply_binary(const Mesh& mesh);  // polygons must have <= 255 co
 Result<Mesh> load_mesh(const std::string& path, UVSet* uvs = nullptr);
 Status save_mesh(const Mesh& mesh, const std::string& path, const UVSet* uvs = nullptr);
 
+// Writes `bytes` to `path`, replacing any existing file.
+Status write_file_bytes(const std::string& path, std::string_view bytes);
+
 // Merge vertices whose positions are within `tolerance` (0 = bit-exact) and
 // remap faces; STL import uses this because STL stores unshared triangles.
 std::size_t weld_vertices(Mesh& mesh, float tolerance = 0.0f);

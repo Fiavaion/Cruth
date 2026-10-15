@@ -211,10 +211,12 @@ Result<std::vector<BakedMap>> bake(const Mesh& low, const UVSet& uv, const Mesh&
                                     break;
                                 case BakeMap::Height: px[0] = dot(D, n); break;
                                 case BakeMap::VectorDisplacement: {
-                                    const Vec3 td = to_tangent_space(D);
-                                    px[0] = td.x;
-                                    px[1] = td.y;
-                                    px[2] = td.z;
+                                    // Orthonormal unit frame, not the exact normal-map inverse.
+                                    const Vec3 ut = normalize(vT - n * dot(n, vT));
+                                    const Vec3 ub = cross(n, ut) * corner_tangents.sign[c0 + nearest];
+                                    px[0] = dot(D, ut);
+                                    px[1] = dot(D, ub);
+                                    px[2] = dot(D, n);
                                     break;
                                 }
                                 case BakeMap::AmbientOcclusion: {

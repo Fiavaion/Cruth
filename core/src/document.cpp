@@ -7,8 +7,6 @@
 #include "cruth/reproject.hpp"
 #include "cruth/uv.hpp"
 
-#include <fstream>
-
 namespace cruth {
 
 namespace {
@@ -228,14 +226,9 @@ Result<GameAssetReport> Document::export_game_asset(const std::string& directory
     report.texels = bstats.texels;
     report.misses = bstats.misses;
     const std::string base = directory + "/" + options.name;
-    {
-        // Triangles and vn, to match what the normal map was baked against.
-        std::ofstream obj(base + ".obj", std::ios::binary | std::ios::trunc);
-        const std::string text = write_baked_asset_obj(low, uv.value());
-        if (!obj.write(text.data(), static_cast<std::streamsize>(text.size()))) {
-            return Error{ErrorCode::Io, "cannot write " + base + ".obj"};
-        }
-    }
+    // Triangles and vn, to match what the normal map was baked against.
+    auto s = write_file_bytes(base + ".obj", write_baked_asset_obj(low, uv.value()));
+    if (!s) return s.error();
     report.files.push_back(base + ".obj");
     for (const auto& m : baked.value()) {
         const bool height = m.map == BakeMap::Height;

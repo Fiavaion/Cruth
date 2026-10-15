@@ -526,6 +526,10 @@ Status save_mesh(const Mesh& mesh, const std::string& path, const UVSet* uvs) {
             break;
         default: return Error{ErrorCode::UnsupportedFormat, "unsupported file type: " + path};
     }
+    return write_file_bytes(path, bytes);
+}
+
+Status write_file_bytes(const std::string& path, std::string_view bytes) {
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) return Error{ErrorCode::Io, "cannot write " + path};
     f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
