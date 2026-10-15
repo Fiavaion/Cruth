@@ -129,11 +129,9 @@ Vec3 RetopoMesh::normal_at(Vec3 p) const {
     return normalize(cross(P[t[1]] - P[t[0]], P[t[2]] - P[t[0]]));
 }
 
-Index RetopoMesh::add_vertex_welded(Vec3 p) {
-    p = snap(p);
-    const float r2 = weld_radius * weld_radius;
+Index RetopoMesh::nearest_vertex(Vec3 p, float radius) const {
     Index best = kInvalidIndex;
-    float best_d = r2;
+    float best_d = radius * radius;
     for (Index v = 0; v < mesh_.vertex_count(); ++v) {
         const float d = length_squared(mesh_.positions[v] - p);
         if (d <= best_d) {
@@ -141,7 +139,13 @@ Index RetopoMesh::add_vertex_welded(Vec3 p) {
             best = v;
         }
     }
-    return best != kInvalidIndex ? best : mesh_.add_vertex(p);
+    return best;
+}
+
+Index RetopoMesh::add_vertex_welded(Vec3 p) {
+    p = snap(p);
+    const Index v = nearest_vertex(p, weld_radius);
+    return v != kInvalidIndex ? v : mesh_.add_vertex(p);
 }
 
 // Adds a face wound so its normal agrees with the reference surface.
@@ -162,6 +166,7 @@ Status RetopoMesh::add_strip(std::span<const Vec3> stroke, float width, int segm
     if (stroke.size() < 2 || segments < 1 || !(width > 0)) {
         return Error{ErrorCode::InvalidArgument, "strip needs a stroke of 2+ points, segments >= 1 and width > 0"};
     }
+    checkpoint();
     const auto spine = resample_polyline(stroke, segments + 1, false);
     std::vector<Index> left, right;
     for (std::size_t i = 0; i < spine.size(); ++i) {
@@ -221,10 +226,11 @@ Result<std::vector<Index>> RetopoMesh::add_contour(std::span<const Vec3> stroke,
     std::rotate(loop.begin(), loop.begin() + std::ptrdiff_t(start), loop.end());
     const auto samples = resample_polyline(loop, count, closed);
 
+    checkpoint();
     std::vector<Index> ring;
     for (const Vec3& p : samples) ring.push_back(mesh_.add_vertex(snap(p)));
     if (bridge_previous && last_contour_.size() == ring.size()) {
-        auto s = bridge(last_contour_, ring, closed);
+        auto s = bridge_chains(last_contour_, ring, closed);
         if (!s) return s.error();
     }
     last_contour_ = ring;
@@ -233,6 +239,11 @@ Result<std::vector<Index>> RetopoMesh::add_contour(std::span<const Vec3> stroke,
 
 Status RetopoMesh::bridge(std::span<const Index> a, std::span<const Index> b, bool closed) {
     if (a.size() != b.size() || a.size() < 2) return Error{ErrorCode::InvalidArgument, "bridge needs two chains of equal length >= 2"};
+    checkpoint();
+    return bridge_chains(a, b, closed);
+}
+
+Status RetopoMesh::bridge_chains(std::span<const Index> a, std::span<const Index> b, bool closed) {
     const std::size_t n = a.size();
     std::vector<Index> bb(b.begin(), b.end());
     if (closed) {
@@ -272,15 +283,109 @@ Status RetopoMesh::bridge(std::span<const Index> a, std::span<const Index> b, bo
 }
 
 Status RetopoMesh::add_quad(const std::array<Vec3, 4>& corners) {
+    Snapshot before{mesh_, last_contour_};
     std::vector<Index> c;
     for (const Vec3& p : corners) c.push_back(add_vertex_welded(p));
     std::vector<Index> unique = c;
     std::sort(unique.begin(), unique.end());
     if (std::unique(unique.begin(), unique.end()) != unique.end()) {
+        mesh_ = std::move(before.mesh);
         return Error{ErrorCode::InvalidArgument, "quad corners weld onto the same vertex"};
     }
+    commit(std::move(before));
     add_face_outward(c);
     return Status::ok();
+}
+
+Result<RetopoMesh::QuadPenTap> RetopoMesh::quad_pen_tap(Vec3 p) {
+    PenTap tap{snap(p), kInvalidIndex};
+    tap.vertex = nearest_vertex(tap.position, weld_radius);
+    if (tap.vertex != kInvalidIndex) tap.position = mesh_.positions[tap.vertex];
+    for (const PenTap& q : pen_) {
+        if ((tap.vertex != kInvalidIndex && q.vertex == tap.vertex) || distance(q.position, tap.position) <= weld_radius) {
+            return Error{ErrorCode::InvalidArgument, "quad pen: tap repeats a pending corner"};
+        }
+    }
+    pen_.push_back(tap);
+    QuadPenTap out;
+    if (pen_.size() < 4) {
+        out.pending = pen_.size();
+        return out;
+    }
+
+    // Taps need not go round the quad: the shortest closed path through them
+    // does (a crossed order is always longer), keeping the fixed taps first so
+    // a chained quad keeps the shared edge.
+    std::array<std::size_t, 4> order{0, 1, 2, 3}, best = order;
+    float best_len = 3.4e38f;
+    do {
+        float len = 0;
+        for (std::size_t i = 0; i < 4; ++i) len += distance(pen_[order[i]].position, pen_[order[(i + 1) % 4]].position);
+        if (len < best_len) {
+            best_len = len;
+            best = order;
+        }
+    } while (std::next_permutation(order.begin() + std::ptrdiff_t(pen_fixed_), order.end()));
+
+    std::unordered_map<std::uint64_t, int> uses;
+    for (std::size_t f = 0; f < mesh_.face_count(); ++f) {
+        auto fv = mesh_.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) ++uses[edge_key(fv[i], fv[(i + 1) % fv.size()])];
+    }
+    auto edge_uses = [&](Index a, Index b) {
+        if (a == kInvalidIndex || b == kInvalidIndex) return 0;
+        const auto it = uses.find(edge_key(a, b));
+        return it == uses.end() ? 0 : it->second;
+    };
+    auto reject = [&](const char* why) -> Error {
+        pen_.pop_back();
+        return Error{ErrorCode::InvalidArgument, why};
+    };
+    std::array<Index, 4> existing{};
+    for (std::size_t i = 0; i < 4; ++i) existing[i] = pen_[best[i]].vertex;
+    for (std::size_t i = 0; i < 4; ++i) {
+        if (edge_uses(existing[i], existing[(i + 1) % 4]) >= 2) return reject("quad pen: an edge of the quad already has two faces");
+    }
+    if (std::find(existing.begin(), existing.end(), kInvalidIndex) == existing.end()) {
+        std::array<Index, 4> sorted = existing;
+        std::sort(sorted.begin(), sorted.end());
+        for (std::size_t f = 0; f < mesh_.face_count(); ++f) {
+            if (mesh_.face_size(f) != 4) continue;
+            std::array<Index, 4> fv{};
+            std::copy_n(mesh_.face(f).begin(), 4, fv.begin());
+            std::sort(fv.begin(), fv.end());
+            if (fv == sorted) return reject("quad pen: the quad already exists");
+        }
+    }
+
+    std::array<Vec3, 4> position{};
+    for (std::size_t i = 0; i < 4; ++i) position[i] = pen_[best[i]].position;
+    checkpoint();  // ends the chain; it is restarted below
+    std::vector<Index> corners(4);
+    for (std::size_t i = 0; i < 4; ++i) corners[i] = existing[i] != kInvalidIndex ? existing[i] : mesh_.add_vertex(position[i]);
+    add_face_outward(corners);
+    out.face_added = true;
+    // Continue the strip from the quad's last edge, unless that edge is now
+    // shared by two faces and so has no free side.
+    const Index c2 = corners[2], c3 = corners[3];
+    if (edge_uses(c2, c3) + 1 < 2) {
+        pen_.push_back({mesh_.positions[c3], c3});
+        pen_.push_back({mesh_.positions[c2], c2});
+        pen_fixed_ = 2;
+    }
+    out.pending = pen_.size();
+    return out;
+}
+
+void RetopoMesh::quad_pen_lift() {
+    pen_.clear();
+    pen_fixed_ = 1;
+}
+
+std::vector<Vec3> RetopoMesh::quad_pen_pending() const {
+    std::vector<Vec3> out;
+    for (const PenTap& t : pen_) out.push_back(t.vertex != kInvalidIndex ? mesh_.positions[t.vertex] : t.position);
+    return out;
 }
 
 std::pair<Index, Index> RetopoMesh::nearest_edge(Vec3 p) const {
@@ -312,6 +417,7 @@ Result<std::vector<Index>> RetopoMesh::insert_loop(Index a, Index b, float t) {
     }
     if (start == kInvalidIndex) return Error{ErrorCode::InvalidArgument, "insert loop: (a, b) is not an edge"};
     t = std::clamp(t, 0.01f, 0.99f);
+    checkpoint();
 
     // Walk the ring of quads, recording each cut edge as (a-side vertex,
     // other vertex) so every cut sits at t from the same side of the ring and
@@ -413,11 +519,178 @@ Result<std::vector<Index>> RetopoMesh::insert_loop(Index a, Index b, float t) {
     return loop;
 }
 
+Result<std::vector<Index>> RetopoMesh::insert_loop_around(std::span<const Vec3> stroke) {
+    if (stroke.size() < 3) return Error{ErrorCode::InvalidArgument, "loop around needs a stroke of 3+ points"};
+    if (mesh_.face_count() == 0) return Error{ErrorCode::InvalidArgument, "loop around: the cage has no faces"};
+    std::unordered_map<std::uint64_t, std::vector<Index>> edge_faces;
+    double edge_sum = 0;
+    for (std::size_t f = 0; f < mesh_.face_count(); ++f) {
+        auto fv = mesh_.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            const Index p = fv[i], q = fv[(i + 1) % fv.size()];
+            edge_faces[edge_key(p, q)].push_back(Index(f));
+            edge_sum += distance(mesh_.positions[p], mesh_.positions[q]);
+        }
+    }
+    const float mean_edge = float(edge_sum / double(mesh_.corner_count()));
+    // Local index i of the edge (fv[i], fv[i + 1]) that faces f and g share, or -1.
+    auto shared_edge = [&](Index f, Index g) {
+        auto fv = mesh_.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            const auto& on = edge_faces.at(edge_key(fv[i], fv[(i + 1) % fv.size()]));
+            if (std::find(on.begin(), on.end(), g) != on.end()) return int(i);
+        }
+        return -1;
+    };
+    // Shortest run of faces from `from` (excluded) to `to` (included) across
+    // edges, avoiding `avoid` except for `to`; empty if there is none.
+    auto shortest = [&](Index from, Index to, const std::unordered_map<Index, std::size_t>& avoid) {
+        std::unordered_map<Index, Index> parent{{from, from}};
+        std::vector<Index> queue{from};
+        for (std::size_t head = 0; head < queue.size() && !parent.count(to); ++head) {
+            auto fv = mesh_.face(queue[head]);
+            for (std::size_t i = 0; i < fv.size(); ++i) {
+                for (Index g : edge_faces.at(edge_key(fv[i], fv[(i + 1) % fv.size()]))) {
+                    if (parent.count(g) || (g != to && avoid.count(g))) continue;
+                    parent.emplace(g, queue[head]);
+                    queue.push_back(g);
+                }
+            }
+        }
+        std::vector<Index> run;
+        if (!parent.count(to)) return run;
+        for (Index f = to; f != from; f = parent.at(f)) run.push_back(f);
+        std::reverse(run.begin(), run.end());
+        return run;
+    };
+
+    // The faces under the stroke, sampled finer than the cage's edges, as a
+    // simple path: revisiting a face drops the detour since its first visit.
+    TriangleBVH cage(mesh_);
+    const int count = std::clamp(int(polyline_length(stroke, true) / (0.25f * mean_edge)) + 1, 3, 20000);
+    std::vector<Index> ring;
+    std::unordered_map<Index, std::size_t> at;
+    bool closed = false;
+    auto visit = [&](Index f) {
+        const auto it = at.find(f);
+        if (it == at.end()) {
+            at.emplace(f, ring.size());
+            ring.push_back(f);
+        } else if (it->second == 0 && ring.size() >= 3) {
+            closed = true;  // back where the stroke started
+        } else {
+            for (std::size_t i = it->second + 1; i < ring.size(); ++i) at.erase(ring[i]);
+            ring.resize(it->second + 1);
+        }
+    };
+    for (const Vec3& p : resample_polyline(stroke, count, true)) {
+        const auto hit = cage.closest_point(p);
+        if (!hit || hit->distance > 2 * mean_edge) return Error{ErrorCode::InvalidArgument, "loop around: the stroke strays off the cage"};
+        const Index f = cage.face_of(hit->triangle);
+        if (ring.empty()) {
+            visit(f);
+            continue;
+        }
+        if (f == ring.back()) continue;
+        const std::vector<Index> run = shared_edge(ring.back(), f) >= 0 ? std::vector<Index>{f} : shortest(ring.back(), f, {});
+        if (run.empty()) return Error{ErrorCode::InvalidArgument, "loop around: the stroke crosses between unconnected parts"};
+        for (Index g : run) {
+            visit(g);
+            if (closed) break;
+        }
+        if (closed) break;
+    }
+    if (!closed && ring.size() >= 2 && !(ring.size() >= 3 && shared_edge(ring.back(), ring.front()) >= 0)) {
+        // The stroke ended short of its start: close the ring the shortest way round.
+        std::vector<Index> run = shortest(ring.back(), ring.front(), at);
+        if (run.empty()) return Error{ErrorCode::InvalidArgument, "loop around: the stroke does not close round a feature"};
+        run.pop_back();  // the start face
+        for (Index g : run) visit(g);
+    }
+    const std::size_t n = ring.size();
+    if (n < 3) return Error{ErrorCode::InvalidArgument, "loop around: the stroke must go round at least three faces"};
+
+    // Where the ring enters and leaves each face (local edge indices).
+    std::vector<int> in(n), out(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const Index f = ring[i];
+        if (mesh_.face_size(f) != 4) return Error{ErrorCode::InvalidArgument, "loop around: the ring crosses a face that is not a quad"};
+        in[i] = shared_edge(f, ring[(i + n - 1) % n]);
+        out[i] = shared_edge(f, ring[(i + 1) % n]);
+        if (in[i] < 0 || out[i] < 0 || in[i] == out[i]) return Error{ErrorCode::InvalidArgument, "loop around: the ring turns back on itself"};
+        auto fv = mesh_.face(f);
+        if (edge_faces.at(edge_key(fv[out[i]], fv[(out[i] + 1) % 4])).size() != 2) {
+            return Error{ErrorCode::InvalidArgument, "loop around: the ring crosses a non-manifold edge"};
+        }
+    }
+    auto edge_at = [&](std::size_t i, int e) {
+        auto fv = mesh_.face(ring[i]);
+        return edge_key(fv[e], fv[(e + 1) % 4]);
+    };
+    for (std::size_t i = 0; i < n; ++i) {
+        if (edge_at(i, out[i]) != edge_at((i + 1) % n, in[(i + 1) % n])) {
+            return Error{ErrorCode::InvalidArgument, "loop around: neighbouring ring faces share more than one edge"};
+        }
+    }
+
+    checkpoint();
+    // One vertex in the middle of each edge between ring faces.
+    std::unordered_map<std::uint64_t, Index> cut;
+    for (std::size_t i = 0; i < n; ++i) {
+        auto fv = mesh_.face(ring[i]);
+        const Index p = fv[out[i]], q = fv[(out[i] + 1) % 4];
+        cut.emplace(edge_key(p, q), mesh_.add_vertex(snap(lerp(mesh_.positions[p], mesh_.positions[q], 0.5f))));
+    }
+    auto cut_of = [&](Index p, Index q) { return cut.at(edge_key(p, q)); };
+    std::vector<Index> loop, centre(n, kInvalidIndex);
+    Mesh rebuilt;
+    for (Index f = 0; f < mesh_.face_count(); ++f) {
+        const auto it = at.find(f);
+        if (it == at.end()) {
+            rebuilt.add_face(mesh_.face(f));
+            continue;
+        }
+        const std::size_t i = it->second;
+        std::array<Index, 4> c{};
+        std::copy_n(mesh_.face(f).begin(), 4, c.begin());
+        if ((out[i] - in[i] + 4) % 4 == 2) {
+            // Straight across: two quads either side of the cut.
+            const int k = in[i];
+            const Index qa = c[k], qb = c[(k + 1) % 4], qc = c[(k + 2) % 4], qd = c[(k + 3) % 4];
+            const Index p = cut_of(qa, qb), q = cut_of(qc, qd);
+            rebuilt.add_face({qa, p, q, qd});
+            rebuilt.add_face({p, qb, qc, q});
+        } else {
+            // Round the corner at c[k + 1]: three quads about a centre, which
+            // the loop passes through (the quarter at the corner, two halves).
+            const int k = (in[i] + 1) % 4 == out[i] ? in[i] : out[i];
+            const Index c0 = c[k], c1 = c[(k + 1) % 4], c2 = c[(k + 2) % 4], c3 = c[(k + 3) % 4];
+            const Index m = cut_of(c0, c1), e = cut_of(c1, c2);
+            centre[i] = mesh_.add_vertex(snap(mesh_.positions[m] + mesh_.positions[e] - mesh_.positions[c1]));
+            rebuilt.add_face({m, c1, e, centre[i]});
+            rebuilt.add_face({e, c2, c3, centre[i]});
+            rebuilt.add_face({c3, c0, m, centre[i]});
+        }
+    }
+    rebuilt.positions = mesh_.positions;
+    // The loop in ring order: each face's entry cut, then its centre if it turns.
+    for (std::size_t i = 0; i < n; ++i) {
+        auto fv = mesh_.face(ring[i]);
+        loop.push_back(cut_of(fv[in[i]], fv[(in[i] + 1) % 4]));
+        if (centre[i] != kInvalidIndex) loop.push_back(centre[i]);
+    }
+    mesh_ = std::move(rebuilt);
+    return loop;
+}
+
 void RetopoMesh::move_vertex(Index v, Vec3 p) {
-    if (v < mesh_.vertex_count()) mesh_.positions[v] = snap(p);
+    if (v >= mesh_.vertex_count()) return;
+    checkpoint();
+    mesh_.positions[v] = snap(p);
 }
 
 void RetopoMesh::relax(int iterations, bool include_boundary) {
+    checkpoint();
     std::unordered_map<std::uint64_t, int> uses;
     for (std::size_t f = 0; f < mesh_.face_count(); ++f) {
         auto fv = mesh_.face(f);
@@ -447,6 +720,7 @@ void RetopoMesh::relax(int iterations, bool include_boundary) {
 
 void RetopoMesh::delete_face(Index f) {
     if (f >= mesh_.face_count()) return;
+    checkpoint();
     Mesh out;
     out.positions = mesh_.positions;
     for (std::size_t g = 0; g < mesh_.face_count(); ++g) {
@@ -471,6 +745,162 @@ void RetopoMesh::compact() {
     for (Index& v : last_contour_) v = v < remap.size() ? remap[v] : kInvalidIndex;
     if (std::find(last_contour_.begin(), last_contour_.end(), kInvalidIndex) != last_contour_.end()) last_contour_.clear();
     mesh_ = std::move(out);
+}
+
+void RetopoMesh::commit(Snapshot before) {
+    quad_pen_lift();
+    end_slide();
+    redo_.clear();
+    undo_.push_back(std::move(before));
+    while (undo_.size() > undo_limit) undo_.erase(undo_.begin());
+}
+
+bool RetopoMesh::undo() {
+    if (undo_.empty()) return false;
+    quad_pen_lift();
+    end_slide();
+    redo_.push_back({std::move(mesh_), std::move(last_contour_)});
+    mesh_ = std::move(undo_.back().mesh);
+    last_contour_ = std::move(undo_.back().last_contour);
+    undo_.pop_back();
+    return true;
+}
+
+bool RetopoMesh::redo() {
+    if (redo_.empty()) return false;
+    quad_pen_lift();
+    end_slide();
+    undo_.push_back({std::move(mesh_), std::move(last_contour_)});
+    mesh_ = std::move(redo_.back().mesh);
+    last_contour_ = std::move(redo_.back().last_contour);
+    redo_.pop_back();
+    return true;
+}
+
+Result<RetopoMesh::EdgeLoop> RetopoMesh::edge_loop(Index a, Index b) const {
+    std::unordered_map<std::uint64_t, std::vector<Index>> edge_faces;
+    for (std::size_t f = 0; f < mesh_.face_count(); ++f) {
+        auto fv = mesh_.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) edge_faces[edge_key(fv[i], fv[(i + 1) % fv.size()])].push_back(Index(f));
+    }
+    if (a == b || !edge_faces.count(edge_key(a, b))) return Error{ErrorCode::InvalidArgument, "edge loop: (a, b) is not an edge"};
+    const VertexAdjacency adj = VertexAdjacency::build(mesh_);
+    std::vector<char> border(mesh_.vertex_count(), 0);
+    for (const auto& [key, faces] : edge_faces) {
+        if (faces.size() == 1) border[key >> 32] = border[key & 0xFFFFFFFFu] = 1;
+    }
+    // The vertex after u -> v: v's one neighbour that is neither u nor next to
+    // v in a face beside edge (u, v). Defined across interior valence-4
+    // vertices, and along a border across valence-3 border vertices.
+    auto next = [&](Index u, Index v) {
+        const auto& faces = edge_faces.at(edge_key(u, v));
+        const auto nb = adj.of(v);
+        const bool straight = border[v] ? nb.size() == 3 && faces.size() == 1 : nb.size() == 4 && faces.size() == 2;
+        if (!straight) return kInvalidIndex;
+        Index w = kInvalidIndex;
+        for (Index x : nb) {
+            bool beside = x == u;
+            for (Index f : faces) {
+                auto fv = mesh_.face(f);
+                const std::size_t m = fv.size();
+                for (std::size_t i = 0; i < m; ++i) {
+                    if (fv[i] == v && (fv[(i + 1) % m] == x || fv[(i + m - 1) % m] == x)) beside = true;
+                }
+            }
+            if (beside) continue;
+            if (w != kInvalidIndex) return kInvalidIndex;  // ambiguous
+            w = x;
+        }
+        return w;
+    };
+    EdgeLoop loop;
+    std::vector<Index>& v = loop.vertices;
+    v = {a, b};
+    std::unordered_set<Index> seen{a, b};
+    for (Index u = a, cur = b;;) {
+        const Index w = next(u, cur);
+        if (w == a && v.size() > 2 && next(cur, a) == b) {
+            loop.closed = true;
+            break;
+        }
+        if (w == kInvalidIndex || !seen.insert(w).second) break;
+        v.push_back(w);
+        u = cur;
+        cur = w;
+    }
+    if (!loop.closed) {
+        std::vector<Index> back;
+        for (Index u = b, cur = a;;) {
+            const Index w = next(u, cur);
+            if (w == kInvalidIndex || !seen.insert(w).second) break;
+            back.push_back(w);
+            u = cur;
+            cur = w;
+        }
+        v.insert(v.begin(), back.rbegin(), back.rend());
+    }
+    return loop;
+}
+
+Result<Vec3> RetopoMesh::begin_slide(Index a, Index b) {
+    auto found = edge_loop(a, b);
+    if (!found) return found.error();
+    const EdgeLoop& loop = found.value();
+    const std::size_t n = loop.vertices.size();
+    std::unordered_map<Index, std::size_t> slot;
+    for (std::size_t i = 0; i < n; ++i) slot.emplace(loop.vertices[i], i);
+    // The loop runs a -> b. A face winding p -> q along it lies on the positive
+    // side, a face winding q -> p on the negative side; each loop vertex slides
+    // toward its other neighbour in those faces.
+    std::vector<Index> positive(n, kInvalidIndex), negative(n, kInvalidIndex);
+    for (std::size_t f = 0; f < mesh_.face_count(); ++f) {
+        auto fv = mesh_.face(f);
+        const std::size_t m = fv.size();
+        for (std::size_t i = 0; i < m; ++i) {
+            const auto ip = slot.find(fv[i]), iq = slot.find(fv[(i + 1) % m]);
+            if (ip == slot.end() || iq == slot.end()) continue;
+            const std::size_t sp = ip->second, sq = iq->second;
+            const bool forward = sq == sp + 1 || (loop.closed && sp == n - 1 && sq == 0);
+            const bool backward = sp == sq + 1 || (loop.closed && sq == n - 1 && sp == 0);
+            if (!forward && !backward) continue;
+            auto& side = forward ? positive : negative;
+            if (side[sp] == kInvalidIndex) side[sp] = fv[(i + m - 1) % m];
+            if (side[sq] == kInvalidIndex) side[sq] = fv[(i + 2) % m];
+        }
+    }
+    Slide slide;
+    slide.vertices = loop.vertices;
+    for (std::size_t i = 0; i < n; ++i) {
+        const Vec3 o = mesh_.positions[loop.vertices[i]];
+        slide.origin.push_back(o);
+        slide.positive.push_back(positive[i] != kInvalidIndex ? mesh_.positions[positive[i]] : o);
+        slide.negative.push_back(negative[i] != kInvalidIndex ? mesh_.positions[negative[i]] : o);
+    }
+    // How far t = 1 moves the middle of edge (a, b).
+    const std::size_t sa = slot.at(a), sb = slot.at(b);
+    Vec3 axis = (slide.positive[sa] - slide.origin[sa] + slide.positive[sb] - slide.origin[sb]) * 0.5f;
+    if (length_squared(axis) == 0) axis = (slide.origin[sa] - slide.negative[sa] + slide.origin[sb] - slide.negative[sb]) * 0.5f;
+    checkpoint();
+    slide_ = std::move(slide);
+    return axis;
+}
+
+void RetopoMesh::update_slide(float t) {
+    if (!slide_) return;
+    t = std::isfinite(t) ? std::clamp(t, -0.99f, 0.99f) : 0.0f;
+    const Slide& s = *slide_;
+    for (std::size_t i = 0; i < s.vertices.size(); ++i) {
+        const Vec3 target = t >= 0 ? s.positive[i] : s.negative[i];
+        mesh_.positions[s.vertices[i]] = snap(lerp(s.origin[i], target, std::abs(t)));
+    }
+}
+
+Status RetopoMesh::slide_loop(Index a, Index b, float t) {
+    auto axis = begin_slide(a, b);
+    if (!axis) return axis.error();
+    update_slide(t);
+    end_slide();
+    return Status::ok();
 }
 
 RetopoStats RetopoMesh::stats() const {

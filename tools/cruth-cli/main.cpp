@@ -73,6 +73,12 @@ int usage() {
         "  retopo-begin      start a retopology over the current sculpt\n"
         "  contour N VX VY VZ  stroke (p lines, then end) -> loop of N vertices, view dir V\n"
         "  strip WIDTH SEGMENTS  stroke (p lines, then end) -> quad strip\n"
+        "  tap X Y Z         quad pen: every 4th tap makes a quad, then each 2 more extend the strip\n"
+        "  tap-lift          end the quad-pen chain\n"
+        "  insert-loop X Y Z [T]  insert a loop across the quad ring through the edge nearest X Y Z\n"
+        "  loop-around       stroke (p lines, then end) round a feature -> closed loop through the quads under it\n"
+        "  slide-loop X Y Z T  slide the edge loop through the edge nearest X Y Z by T in (-1, 1)\n"
+        "  retopo-undo | retopo-redo   step through the retopology's own history\n"
         "  retopo-relax N | retopo-apply L   relax, or replace the sculpt keeping L levels\n"
         "brush types: standard clay inflate smooth flatten pinch crease grab mask\n",
         stderr);
@@ -217,7 +223,7 @@ int run_sculpt(const std::string& in_path, const std::string& script_path, const
     std::string raw;
     int line_no = 0, strokes = 0;
     // A stroke's samples feed sculpting, a guide or a retopology tool.
-    enum class Pending { Sculpt, Guide, Contour, Strip } pending = Pending::Sculpt;
+    enum class Pending { Sculpt, Guide, Contour, Strip, LoopAround } pending = Pending::Sculpt;
     std::vector<Vec3> points;
     std::vector<std::vector<Vec3>> guides;
     std::unique_ptr<RetopoMesh> retopo;
@@ -257,6 +263,41 @@ int run_sculpt(const std::string& in_path, const std::string& script_path, const
             }
             if (in.fail()) return fail(where() + "bad " + cmd + " arguments");
             points.clear();
+        } else if (cmd == "tap" || cmd == "tap-lift") {
+            if (!retopo) return fail(where() + "run retopo-begin first");
+            if (cmd == "tap-lift") {
+                retopo->quad_pen_lift();
+                continue;
+            }
+            Vec3 p;
+            if (!(in >> p.x >> p.y >> p.z)) return fail(where() + "expected 'tap X Y Z'");
+            auto r = retopo->quad_pen_tap(p);
+            if (!r) return fail(where() + r.error().message);
+        } else if (cmd == "loop-around") {
+            if (!retopo) return fail(where() + "run retopo-begin first");
+            pending = Pending::LoopAround;
+            points.clear();
+        } else if (cmd == "insert-loop") {
+            if (!retopo) return fail(where() + "run retopo-begin first");
+            Vec3 p;
+            float t = 0.5f;
+            if (!(in >> p.x >> p.y >> p.z)) return fail(where() + "expected 'insert-loop X Y Z [T]'");
+            in >> t;
+            const auto [a, b] = retopo->nearest_edge(p);
+            auto r = retopo->insert_loop(a, b, t);
+            if (!r) return fail(where() + r.error().message);
+        } else if (cmd == "slide-loop") {
+            if (!retopo) return fail(where() + "run retopo-begin first");
+            Vec3 p;
+            float t = 0;
+            if (!(in >> p.x >> p.y >> p.z >> t)) return fail(where() + "expected 'slide-loop X Y Z T'");
+            const auto [a, b] = retopo->nearest_edge(p);
+            auto s = retopo->slide_loop(a, b, t);
+            if (!s) return fail(where() + s.error().message);
+        } else if (cmd == "retopo-undo" || cmd == "retopo-redo") {
+            if (!retopo) return fail(where() + "run retopo-begin first");
+            const bool done = cmd == "retopo-undo" ? retopo->undo() : retopo->redo();
+            if (!done) return fail(where() + "nothing to " + cmd.substr(7));
         } else if (cmd == "retopo-relax") {
             int n = 1;
             in >> n;
@@ -288,6 +329,10 @@ int run_sculpt(const std::string& in_path, const std::string& script_path, const
             } else if (pending == Pending::Contour) {
                 auto r = retopo->add_contour(points, contour_count, contour_view);
                 if (!r) return fail(where() + r.error().message);
+            } else if (pending == Pending::LoopAround) {
+                auto r = retopo->insert_loop_around(points);
+                if (!r) return fail(where() + r.error().message);
+                std::printf("loop around: %zu vertices\n", r.value().size());
             } else if (pending == Pending::Strip) {
                 auto r = retopo->add_strip(points, strip_width, strip_segments);
                 if (!r) return fail(where() + r.error().message);

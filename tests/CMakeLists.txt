@@ -19,6 +19,7 @@ if(TARGET cruth-cli)
       -DCLI=$<TARGET_FILE:cruth-cli>
       -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/data/head_blockout.stroke
       -DRETOPO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/data/retopo_capsule.stroke
+      -DRETOPO_TOOLS_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/data/retopo_tools.stroke
       -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli_chain
       -DPYTHON=$<$<BOOL:${Python3_FOUND}>:${Python3_EXECUTABLE}>
       -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/tools/check_images.py

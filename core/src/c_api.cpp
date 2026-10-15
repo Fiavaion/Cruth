@@ -383,12 +383,113 @@ CruthStatus cruth_retopo_add_quad(CruthRetopo* retopo, const CruthVec3 corners[4
     });
 }
 
+CruthStatus cruth_retopo_quad_pen_tap(CruthRetopo* retopo, CruthVec3 point, CruthQuadPenResult* result) {
+    if (!retopo) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    if (result) *result = {};
+    return guarded([&] {
+        auto r = retopo->retopo.quad_pen_tap(to_core(point));
+        if (!r) {
+            if (result) result->pending = static_cast<uint32_t>(retopo->retopo.quad_pen_pending().size());
+            return from_error(r.error());
+        }
+        if (result) {
+            result->pending = static_cast<uint32_t>(r.value().pending);
+            result->face_added = r.value().face_added;
+        }
+        return CRUTH_OK;
+    });
+}
+
+void cruth_retopo_quad_pen_lift(CruthRetopo* retopo) {
+    if (retopo) retopo->retopo.quad_pen_lift();
+}
+
+size_t cruth_retopo_quad_pen_pending(const CruthRetopo* retopo, CruthVec3* out, size_t capacity) {
+    if (!retopo) return 0;
+    return guarded_value<size_t>(0, [&] {
+        const auto pending = retopo->retopo.quad_pen_pending();
+        for (std::size_t i = 0; out && i < pending.size() && i < capacity; ++i) out[i] = to_c(pending[i]);
+        return pending.size();
+    });
+}
+
 void cruth_retopo_relax(CruthRetopo* retopo, int32_t iterations) {
     if (retopo) guarded([&] {
             retopo->retopo.relax(std::clamp(iterations, 0, 100));
             return CRUTH_OK;
         });
 }
+
+bool cruth_retopo_nearest_edge(const CruthRetopo* retopo, CruthVec3 point, uint32_t* a, uint32_t* b) {
+    if (!retopo || !a || !b) return false;
+    return guarded_value(false, [&] {
+        const auto [ea, eb] = retopo->retopo.nearest_edge(to_core(point));
+        if (ea == cruth::kInvalidIndex) return false;
+        *a = ea;
+        *b = eb;
+        return true;
+    });
+}
+
+CruthStatus cruth_retopo_slide_loop_begin(CruthRetopo* retopo, uint32_t a, uint32_t b, CruthVec3* axis) {
+    if (!retopo) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        auto r = retopo->retopo.begin_slide(a, b);
+        if (!r) return from_error(r.error());
+        if (axis) *axis = to_c(r.value());
+        return CRUTH_OK;
+    });
+}
+
+void cruth_retopo_slide_loop_update(CruthRetopo* retopo, float t) {
+    if (retopo) retopo->retopo.update_slide(t);
+}
+
+void cruth_retopo_slide_loop_end(CruthRetopo* retopo) {
+    if (retopo) retopo->retopo.end_slide();
+}
+
+CruthStatus cruth_retopo_slide_loop(CruthRetopo* retopo, uint32_t a, uint32_t b, float t) {
+    if (!retopo) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        auto s = retopo->retopo.slide_loop(a, b, t);
+        return s ? CRUTH_OK : from_error(s.error());
+    });
+}
+
+CruthStatus cruth_retopo_insert_loop(CruthRetopo* retopo, uint32_t a, uint32_t b, float t, uint32_t* loop_vertices) {
+    if (!retopo) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    if (loop_vertices) *loop_vertices = 0;
+    return guarded([&] {
+        auto r = retopo->retopo.insert_loop(a, b, t);
+        if (!r) return from_error(r.error());
+        if (loop_vertices) *loop_vertices = static_cast<uint32_t>(r.value().size());
+        return CRUTH_OK;
+    });
+}
+
+CruthStatus cruth_retopo_insert_loop_around(CruthRetopo* retopo, const CruthVec3* stroke, uint32_t count,
+                                            uint32_t* loop_vertices) {
+    if (!retopo || !stroke) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    if (loop_vertices) *loop_vertices = 0;
+    return guarded([&] {
+        auto r = retopo->retopo.insert_loop_around(to_points(stroke, count));
+        if (!r) return from_error(r.error());
+        if (loop_vertices) *loop_vertices = static_cast<uint32_t>(r.value().size());
+        return CRUTH_OK;
+    });
+}
+
+bool cruth_retopo_undo(CruthRetopo* retopo) {
+    return retopo && guarded_value(false, [&] { return retopo->retopo.undo(); });
+}
+
+bool cruth_retopo_redo(CruthRetopo* retopo) {
+    return retopo && guarded_value(false, [&] { return retopo->retopo.redo(); });
+}
+
+bool cruth_retopo_can_undo(const CruthRetopo* retopo) { return retopo && retopo->retopo.can_undo(); }
+bool cruth_retopo_can_redo(const CruthRetopo* retopo) { return retopo && retopo->retopo.can_redo(); }
 
 CruthRetopoStats cruth_retopo_stats(const CruthRetopo* retopo) {
     CruthRetopoStats out{};

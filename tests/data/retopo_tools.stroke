@@ -1,0 +1,60 @@
+# Retopology editing tools on the unit sphere, headless.
+# SPDX-License-Identifier: MIT
+retopo-begin
+
+# Quad pen: four taps make a quad, two more extend the strip across its last edge.
+tap -0.15 0.98 -0.15
+tap 0.15 0.98 -0.15
+tap 0.15 0.98 0.15
+tap -0.15 0.98 0.15
+tap 0.15 0.89 0.45
+tap -0.15 0.89 0.45
+tap-lift
+
+# Two more quads welded onto the strip make a 2x2 patch round the vertex at
+# (0.15, 0.15); a closed loop around that vertex runs through all four quads.
+tap 0.1500 0.9772 -0.1500
+tap 0.1500 0.9772 0.1500
+tap 0.4500 0.8803 0.1500
+tap 0.4500 0.8803 -0.1500
+tap-lift
+tap 0.1500 0.9772 0.1500
+tap 0.1500 0.8803 0.4500
+tap 0.4500 0.7714 0.4500
+tap 0.4500 0.8803 0.1500
+tap-lift
+loop-around
+p 0.2100 0.9661 0.1500
+p 0.2020 0.9627 0.1800
+p 0.1800 0.9627 0.2020
+p 0.1500 0.9661 0.2100
+p 0.1200 0.9720 0.2020
+p 0.0980 0.9788 0.1800
+p 0.0900 0.9846 0.1500
+p 0.0980 0.9879 0.1200
+p 0.1200 0.9879 0.0980
+p 0.1500 0.9846 0.0900
+p 0.1800 0.9788 0.0980
+p 0.2020 0.9720 0.1200
+end
+
+# Three contour loops round the middle, then slide the edge loop nearest a
+# point on the middle one a quarter of the way to its neighbour; undo, redo.
+contour 12 0 0 -1
+p -1.2 -0.4 0.6
+p 1.2 -0.4 0.6
+end
+contour 12 0 0 -1
+p -1.2 -0.2 0.6
+p 1.2 -0.2 0.6
+end
+contour 12 0 0 -1
+p -1.2 0.0 0.6
+p 1.2 0.0 0.6
+end
+slide-loop 0 -0.2 1 0.25
+retopo-undo
+retopo-redo
+insert-loop 0 -0.1 1 0.5
+
+retopo-apply 1

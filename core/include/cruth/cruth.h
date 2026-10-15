@@ -190,7 +190,65 @@ CruthStatus cruth_retopo_add_strip(CruthRetopo* retopo, const CruthVec3* stroke,
 CruthStatus cruth_retopo_add_contour(CruthRetopo* retopo, const CruthVec3* stroke, uint32_t count, int32_t loop_vertices,
                                      CruthVec3 view_direction);
 CruthStatus cruth_retopo_add_quad(CruthRetopo* retopo, const CruthVec3 corners[4]);
+
+/* Quad pen, tap by tap (T-02). Each tap is one point on the surface; a tap near a
+ * cage vertex reuses it, so quads share edges. The 4th pending tap makes a quad
+ * (taps in any order round it), then the chain continues from that quad's last
+ * edge: every 2 more taps add the next quad of a strip. Lift ends the chain.
+ * A rejected tap (repeats a pending corner, or would make a non-manifold or
+ * duplicate quad) returns CRUTH_ERROR_INVALID_ARGUMENT and keeps the pending taps. */
+typedef struct CruthQuadPenResult {
+    uint32_t pending; /* taps waiting for the next quad, 0..3 */
+    bool face_added;  /* this tap closed a quad */
+} CruthQuadPenResult;
+
+CruthStatus cruth_retopo_quad_pen_tap(CruthRetopo* retopo, CruthVec3 point, CruthQuadPenResult* result);
+void cruth_retopo_quad_pen_lift(CruthRetopo* retopo);
+/* Pending tap positions for an overlay. Returns the count; writes at most capacity. */
+size_t cruth_retopo_quad_pen_pending(const CruthRetopo* retopo, CruthVec3* out, size_t capacity);
 void cruth_retopo_relax(CruthRetopo* retopo, int32_t iterations);
+
+/* Edge of the cage nearest to point, as two vertex indices. Returns false when
+ * the cage has no edges. */
+bool cruth_retopo_nearest_edge(const CruthRetopo* retopo, CruthVec3 point, uint32_t* a, uint32_t* b);
+
+/* Slide loop (T-03): slides the edge loop through edge (a, b) between its
+ * neighbouring rings, re-projected onto the surface. The loop runs straight on
+ * through valence-4 vertices and stops at poles and borders.
+ * begin: picks the loop; writes to axis (nullable) how far t = 1 moves the
+ *        middle of edge (a, b) (on a border with no face on that side, the
+ *        reverse of the t = -1 move), so a 3D drag d maps to
+ *        t = dot(d, axis) / dot(axis, axis).
+ * update: t in (-1, 1), absolute from where the loop was at begin (clamped to
+ *        +-0.99). t > 0 moves toward the side the axis points to.
+ * end:   finishes; begin..end is one cage undo step. Any other edit also ends it. */
+CruthStatus cruth_retopo_slide_loop_begin(CruthRetopo* retopo, uint32_t a, uint32_t b, CruthVec3* axis);
+void cruth_retopo_slide_loop_update(CruthRetopo* retopo, float t);
+void cruth_retopo_slide_loop_end(CruthRetopo* retopo);
+/* begin + update + end in one call. */
+CruthStatus cruth_retopo_slide_loop(CruthRetopo* retopo, uint32_t a, uint32_t b, float t);
+
+/* Insert loop (T-03) across the quad ring through edge (a, b), each ring edge cut
+ * at fraction t (0.01..0.99) from a's side. The ring runs on until a border, a
+ * non-quad face (which absorbs the cut) or back to its start. loop_vertices
+ * (nullable) receives the new loop's vertex count. */
+CruthStatus cruth_retopo_insert_loop(CruthRetopo* retopo, uint32_t a, uint32_t b, float t, uint32_t* loop_vertices);
+/* Closed loop around a feature (T-03): stroke = points on the surface drawn
+ * round the feature over the cage (ends are joined). A new edge loop runs
+ * through the middle of the ring of quads under the stroke; corners become
+ * three quads round a centre vertex, so the cage stays all-quad and nothing
+ * outside the ring changes. Fails (CRUTH_ERROR_INVALID_ARGUMENT, nothing
+ * changed) when the ring crosses a non-quad, strays off the cage or is shorter
+ * than 3 faces. loop_vertices (nullable) receives the loop's vertex count. */
+CruthStatus cruth_retopo_insert_loop_around(CruthRetopo* retopo, const CruthVec3* stroke, uint32_t count,
+                                            uint32_t* loop_vertices);
+
+/* Undo history of cage edits (strips, contours, quads, loops, slides, relax),
+ * separate from the document's: cruth_retopo_apply is the document's undo step. */
+bool cruth_retopo_undo(CruthRetopo* retopo);
+bool cruth_retopo_redo(CruthRetopo* retopo);
+bool cruth_retopo_can_undo(const CruthRetopo* retopo);
+bool cruth_retopo_can_redo(const CruthRetopo* retopo);
 CruthRetopoStats cruth_retopo_stats(const CruthRetopo* retopo);
 /* Edges as line segments for an overlay: 6 floats per edge. Returns the edge count;
  * writes at most float_capacity / 6 edges. */

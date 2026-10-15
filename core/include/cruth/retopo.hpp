@@ -10,7 +10,10 @@
 //                bridged to the previous contour loop
 // - bridge       two vertex chains or loops -> quads          (T-02 Bridge)
 // - add_quad     four points -> one quad                      (T-02 Quad-pen)
-// - move_vertex / relax / delete_face                         (T-03)
+// - quad_pen_tap single taps -> quads, chained into strips      (T-02 Quad-pen)
+// - insert_loop / insert_loop_around / slide / move_vertex / relax / delete_face (T-03)
+//
+// Every edit is one undo step on the cage's own history (undo / redo).
 //
 // The shell turns Pencil input into these calls; the result goes back to the
 // Document with Document::adopt_retopology (T-06).
@@ -18,6 +21,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -65,6 +69,58 @@ public:
     // One quad through four surface points; corners weld to nearby vertices.
     Status add_quad(const std::array<Vec3, 4>& corners);
 
+    // Quad-pen tap input (T-02 Quad-pen): each tap is one surface point. A tap
+    // within weld_radius of a cage vertex reuses that vertex, so new quads share
+    // edges with the cage. The fourth pending tap closes a quad; the taps may go
+    // round it in any order (the shortest-perimeter order is used). The chain
+    // then continues from the quad's last edge, so each further pair of taps
+    // adds the next quad of a strip, until quad_pen_lift() ends the chain. A tap
+    // that repeats a pending corner, or would close a quad onto an edge that
+    // already has two faces or duplicate a face, is rejected and the pending
+    // taps are kept. Edits that renumber vertices end the chain.
+    struct QuadPenTap {
+        std::size_t pending = 0;  // taps waiting for the next quad, 0..3
+        bool face_added = false;
+    };
+    Result<QuadPenTap> quad_pen_tap(Vec3 p);
+    void quad_pen_lift();
+    // Positions of the pending taps, for an overlay.
+    std::vector<Vec3> quad_pen_pending() const;
+
+    // Edge loop through edge (a, b), listed from a then b: it runs straight on
+    // across interior valence-4 vertices (and along a border across valence-3
+    // border vertices) and stops at poles, borders and where it meets itself.
+    struct EdgeLoop {
+        std::vector<Index> vertices;
+        bool closed = false;
+    };
+    Result<EdgeLoop> edge_loop(Index a, Index b) const;
+
+    // Slide loop (T-03): slides the edge loop through (a, b) between its
+    // neighbouring rings, re-projected onto the reference. update_slide(t) is
+    // absolute from where the loop was at begin_slide; t in (-1, 1) is clamped
+    // to [-0.99, 0.99]. t > 0 moves each vertex toward its neighbour across the
+    // face that has a -> b in its winding (on an outward-wound cage, the left of
+    // a -> b seen from outside), t < 0 toward the other side; a vertex with no
+    // neighbour on that side stays put. begin_slide returns the slide axis v:
+    // how far t = 1 moves the middle of edge (a, b), or, on a border where that
+    // side has no face, the reverse of the t = -1 move. A drag d then maps to
+    // t = dot(d, v) / dot(v, v) either way.
+    // begin..end is one undo step; any other edit ends the slide.
+    Result<Vec3> begin_slide(Index a, Index b);
+    void update_slide(float t);
+    void end_slide() { slide_.reset(); }
+    bool sliding() const { return slide_.has_value(); }
+    Status slide_loop(Index a, Index b, float t);  // begin, update, end
+
+    // Undo history of cage edits, at most undo_limit steps. Undo and redo end
+    // the quad-pen chain and any slide.
+    bool can_undo() const { return !undo_.empty(); }
+    bool can_redo() const { return !redo_.empty(); }
+    bool undo();
+    bool redo();
+    std::size_t undo_limit = 32;
+
     // Edge (vertex pair) of the current mesh nearest to p.
     std::pair<Index, Index> nearest_edge(Vec3 p) const;
 
@@ -75,7 +131,20 @@ public:
     // quad is split into four. Returns the new loop's vertices.
     Result<std::vector<Index>> insert_loop(Index a, Index b, float t = 0.5f);
 
-    void move_vertex(Index v, Vec3 p);
+    // Closed loop around a feature (T-03 Insert loop, guided by a stroke). The
+    // stroke is drawn on the cage round the feature (its ends are joined) and
+    // picks the closed ring of quads it passes through; a new edge loop runs
+    // through their middles. Quads the ring crosses straight split in two;
+    // quads where it turns a corner become three quads round a new centre
+    // vertex. So unlike insert_loop, the cut never runs past the stroke, and
+    // the cage stays all-quad and watertight with nothing outside the ring
+    // changed. Gaps between the faces under the stroke are bridged by the
+    // shortest face path, and stretches where it doubles back are dropped.
+    // Fails if the ring crosses a non-quad, the stroke strays off the cage, or
+    // the ring has fewer than three faces. Returns the new loop in order.
+    Result<std::vector<Index>> insert_loop_around(std::span<const Vec3> stroke);
+
+    void move_vertex(Index v, Vec3 p);  // one undo step per call
     // Surface-snapped tangential smoothing; boundary vertices stay put unless asked.
     void relax(int iterations, bool include_boundary = false);
     void delete_face(Index f);
@@ -83,6 +152,25 @@ public:
     RetopoStats stats() const;
 
 private:
+    struct PenTap {
+        Vec3 position;
+        Index vertex = kInvalidIndex;  // existing cage vertex, or none yet
+    };
+
+    struct Snapshot {
+        Mesh mesh;
+        std::vector<Index> last_contour;
+    };
+    struct Slide {
+        std::vector<Index> vertices;
+        std::vector<Vec3> origin, positive, negative;  // targets at t = 1 and t = -1
+    };
+
+    // Records an undo step before an edit, ending the quad-pen chain and any slide.
+    void checkpoint() { commit({mesh_, last_contour_}); }
+    void commit(Snapshot before);
+    Status bridge_chains(std::span<const Index> a, std::span<const Index> b, bool closed);
+    Index nearest_vertex(Vec3 p, float radius) const;
     Index add_vertex_welded(Vec3 p);
     void add_face_outward(std::vector<Index> corners);
     void compact();
@@ -90,6 +178,10 @@ private:
     TriangleBVH reference_;
     Mesh mesh_;
     std::vector<Index> last_contour_;
+    std::vector<PenTap> pen_;
+    std::size_t pen_fixed_ = 1;  // leading pending taps whose order is fixed (2 when chaining)
+    std::optional<Slide> slide_;
+    std::vector<Snapshot> undo_, redo_;
 };
 
 struct Polyline {
