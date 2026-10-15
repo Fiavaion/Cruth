@@ -1,0 +1,260 @@
+// SPDX-License-Identifier: MIT
+import XCTest
+
+/// Smoke tests for the main flows, driven with synthesised finger touches in the
+/// simulator. Every test launches the app fresh on the default 6,146-vertex sphere.
+///
+/// Geometry the coordinates rely on (landscape, see setUp): the sphere is framed
+/// to about 86% of the viewport height around the centre, the brush palette sits
+/// at the left edge around the vertical middle, the side panel at the right edge,
+/// the toolbar at the top and the status bar at the bottom. So the centre band
+/// is on the model and (0.1, 0.88) is empty background.
+final class CruthUITests: XCTestCase {
+    private var app: XCUIApplication!
+
+    private let initialVertices = 6_146
+    private let backgroundCorner = CGVector(dx: 0.1, dy: 0.88)
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        app = XCUIApplication()
+        // Pin the number format ("6,146") and the default (right-handed) layout.
+        app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-leftHanded", "NO"]
+        app.launch()
+        XCTAssertTrue(statusCounts.waitForExistence(timeout: 30), "status bar never appeared")
+        waitForVertexCount(initialVertices, timeout: 30)
+    }
+
+    // MARK: Tests
+
+    func testLaunchShowsViewportAndDefaultSphere() {
+        XCTAssertTrue(viewport.exists, "viewport is not in the accessibility tree")
+        XCTAssertGreaterThan(viewport.frame.width, 500)
+        XCTAssertEqual(vertexCount(), initialVertices)
+        XCTAssertEqual(triangleCount(), 12_288)
+        XCTAssertFalse(undoButton.isEnabled)
+        XCTAssertFalse(redoButton.isEnabled)
+    }
+
+    func testFingerDragWithoutFingerSculptingDoesNotSculpt() {
+        // Default: fingers navigate. A drag across the model orbits.
+        drag(from: CGVector(dx: 0.42, dy: 0.5), to: CGVector(dx: 0.58, dy: 0.5))
+        XCTAssertFalse(undoButton.isEnabled, "a finger drag sculpted with Finger Sculpting off")
+    }
+
+    func testFingerSculptStrokeIsUndoable() {
+        setFingerSculpting(true)
+        drag(from: CGVector(dx: 0.42, dy: 0.5), to: CGVector(dx: 0.58, dy: 0.5))
+        waitFor(undoButton, "isEnabled == true", timeout: 10, "finger stroke on the model did not record an undo step")
+        XCTAssertEqual(vertexCount(), initialVertices, "a sculpt stroke must not change topology")
+
+        undoButton.tap()
+        waitFor(undoButton, "isEnabled == false", timeout: 10, "undo did not return to the initial state")
+        XCTAssertTrue(redoButton.isEnabled, "undoing the stroke should make it redoable")
+        XCTAssertEqual(vertexCount(), initialVertices)
+    }
+
+    func testFingerOnBackgroundOrbitsInsteadOfSculpting() {
+        setFingerSculpting(true)
+        // Starts on the background and sweeps over the model: still an orbit.
+        drag(from: backgroundCorner, to: CGVector(dx: 0.5, dy: 0.5))
+        XCTAssertFalse(undoButton.isEnabled, "a finger that landed on the background started a stroke")
+
+        // Control: the same finger landing on the model does sculpt, so the
+        // assertion above is not vacuous.
+        drag(from: CGVector(dx: 0.45, dy: 0.45), to: CGVector(dx: 0.55, dy: 0.55))
+        waitFor(undoButton, "isEnabled == true", timeout: 10, "finger stroke on the model did not record an undo step")
+    }
+
+    func testSubdivideAndUndo() {
+        runTopologyCommand(["Subdivide (Add Level)"], timeout: 60)
+    }
+
+    func testVoxelRemeshAndUndo() {
+        runTopologyCommand(["Voxel Remesh", "64 voxels"], timeout: 120)
+    }
+
+    func testDecimateAndUndo() {
+        runTopologyCommand(["Decimate", "Keep 50%"], timeout: 120)
+    }
+
+    func testQuadRemeshAndUndo() {
+        runTopologyCommand(["Quad Remesh", "2,000 quads"], timeout: 600)
+    }
+
+    func testGuideStrokesAreRecordedAndCleared() {
+        // A finger draws guides only with Finger Sculpting on (otherwise only the
+        // Pencil does), and that toggle lives in the Sculpt panel.
+        setFingerSculpting(true)
+        selectMode("Guides")
+        let count = app.staticTexts["guideCount"]
+        let clear = app.buttons["clearGuidesButton"]
+        XCTAssertTrue(count.waitForExistence(timeout: 10))
+        XCTAssertEqual(count.label, "0 strokes")
+        XCTAssertFalse(clear.isEnabled)
+
+        drag(from: CGVector(dx: 0.42, dy: 0.45), to: CGVector(dx: 0.58, dy: 0.55))
+        waitFor(count, "label == '1 strokes'", timeout: 10, "guide stroke was not recorded")
+        XCTAssertTrue(clear.isEnabled)
+        XCTAssertFalse(undoButton.isEnabled, "guides are not document edits")
+
+        drag(from: CGVector(dx: 0.5, dy: 0.38), to: CGVector(dx: 0.5, dy: 0.62))
+        waitFor(count, "label == '2 strokes'", timeout: 10, "second guide stroke was not recorded")
+
+        clear.tap()
+        waitFor(count, "label == '0 strokes'", timeout: 10, "Clear Guides did not clear")
+        XCTAssertFalse(clear.isEnabled)
+    }
+
+    func testRetopoContoursBridgeIntoQuads() {
+        setFingerSculpting(true)
+        selectMode("Retopo")
+        let stats = app.staticTexts["retopoStats"]
+        XCTAssertTrue(stats.waitForExistence(timeout: 10))
+        XCTAssertEqual(retopoQuads(stats), 0)
+
+        // One contour is a lone edge loop (no faces, so the stats line cannot
+        // show it); the second bridges to it with one quad per loop vertex (12).
+        drag(from: CGVector(dx: 0.4, dy: 0.42), to: CGVector(dx: 0.6, dy: 0.42))
+        drag(from: CGVector(dx: 0.4, dy: 0.58), to: CGVector(dx: 0.6, dy: 0.58))
+        waitFor(stats, "label BEGINSWITH '12 quads'", timeout: 10,
+                "two contour strokes did not bridge into 12 quads")
+
+        app.buttons["cancelRetopoButton"].tap()
+        XCTAssertTrue(app.switches["fingerSculptingToggle"].waitForExistence(timeout: 10),
+                      "Cancel did not return to Sculpt mode")
+        XCTAssertEqual(vertexCount(), initialVertices)
+        XCTAssertFalse(undoButton.isEnabled)
+    }
+
+    func testRetopoStripApplyAndUndo() {
+        setFingerSculpting(true)
+        selectMode("Retopo")
+        let stats = app.staticTexts["retopoStats"]
+        XCTAssertTrue(stats.waitForExistence(timeout: 10))
+        let tool = app.segmentedControls["retopoToolPicker"].buttons["Strip"]
+        XCTAssertTrue(tool.waitForExistence(timeout: 10))
+        tool.tap()
+
+        // Default strip: 6 segments, so one stroke adds 6 quads.
+        drag(from: CGVector(dx: 0.4, dy: 0.5), to: CGVector(dx: 0.6, dy: 0.5))
+        waitFor(stats, "label BEGINSWITH '6 quads'", timeout: 10, "strip stroke did not add 6 quads")
+
+        let before = statusCounts.label
+        app.buttons["applyRetopoButton"].tap()
+        waitFor(statusCounts, "label != %@", before, timeout: 120, "Apply did not replace the mesh")
+        XCTAssertTrue(app.switches["fingerSculptingToggle"].waitForExistence(timeout: 10),
+                      "Apply did not return to Sculpt mode")
+        XCTAssertNotEqual(vertexCount(), initialVertices)
+
+        undo(backTo: initialVertices)
+    }
+
+    func testPrintCheckReportsTheSphereAsPrintable() {
+        app.buttons["printCheckButton"].tap()
+        let status = app.staticTexts["printStatus"]
+        XCTAssertTrue(status.waitForExistence(timeout: 30), "Print Check sheet did not open")
+        XCTAssertEqual(status.label, "Ready to print")
+        // LabeledContent reads as "title, value".
+        XCTAssertEqual(app.staticTexts["printCheck.Vertices"].label, "Vertices, 6,146")
+        XCTAssertEqual(app.staticTexts["printCheck.Holes"].label, "Holes, 0")
+        app.buttons["printCheckDone"].tap()
+        waitFor(status, "exists == false", timeout: 10, "Done did not close Print Check")
+    }
+
+    // MARK: Elements
+
+    private var viewport: XCUIElement { app.descendants(matching: .any)["viewport"].firstMatch }
+    private var statusCounts: XCUIElement { app.staticTexts["statusCounts"] }
+    private var undoButton: XCUIElement { app.buttons["undoButton"] }
+    private var redoButton: XCUIElement { app.buttons["redoButton"] }
+
+    // MARK: Helpers
+
+    /// Opens the Topology menu, follows `path` through its submenus, waits for
+    /// the vertex count to change, then undoes back to the sphere.
+    private func runTopologyCommand(_ path: [String], timeout: TimeInterval,
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        let before = statusCounts.label
+        app.buttons["topologyMenu"].tap()
+        for item in path {
+            let button = app.buttons[item].firstMatch
+            XCTAssertTrue(button.waitForExistence(timeout: 10), "menu item '\(item)' not found", file: file, line: line)
+            button.tap()
+        }
+        waitFor(statusCounts, "label != %@", before, timeout: timeout,
+                "\(path.joined(separator: " > ")) did not change the mesh (message: \(statusMessage()))",
+                file: file, line: line)
+        XCTAssertNotEqual(vertexCount(), initialVertices, file: file, line: line)
+        XCTAssertTrue(undoButton.isEnabled, file: file, line: line)
+        undo(backTo: initialVertices, file: file, line: line)
+    }
+
+    private func undo(backTo vertices: Int, file: StaticString = #filePath, line: UInt = #line) {
+        undoButton.tap()
+        waitForVertexCount(vertices, timeout: 30, file: file, line: line)
+        XCTAssertFalse(undoButton.isEnabled, "undo stack not back to the initial state", file: file, line: line)
+    }
+
+    private func setFingerSculpting(_ on: Bool, file: StaticString = #filePath, line: UInt = #line) {
+        let toggle = app.switches["fingerSculptingToggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10), file: file, line: line)
+        let want = on ? "1" : "0"
+        if toggle.value as? String != want {
+            // Tap the switch itself (trailing edge); the label half does not toggle.
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        }
+        waitFor(toggle, "value == %@", want, timeout: 5, "Finger Sculpting toggle did not switch", file: file, line: line)
+    }
+
+    private func selectMode(_ title: String, file: StaticString = #filePath, line: UInt = #line) {
+        let segment = app.segmentedControls["modePicker"].buttons[title]
+        XCTAssertTrue(segment.waitForExistence(timeout: 10), "mode '\(title)' not found", file: file, line: line)
+        segment.tap()
+        waitFor(segment, "isSelected == true", timeout: 5, "mode '\(title)' not selected", file: file, line: line)
+    }
+
+    /// A finger press-and-drag on the viewport between normalised points.
+    private func drag(from: CGVector, to: CGVector) {
+        let start = viewport.coordinate(withNormalizedOffset: from)
+        let end = viewport.coordinate(withNormalizedOffset: to)
+        start.press(forDuration: 0.1, thenDragTo: end, withVelocity: XCUIGestureVelocity(600), thenHoldForDuration: 0.1)
+    }
+
+    private func waitFor(_ element: XCUIElement, _ format: String, _ args: Any..., timeout: TimeInterval,
+                         _ message: @autoclosure () -> String,
+                         file: StaticString = #filePath, line: UInt = #line) {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: format, argumentArray: args),
+                                                    object: element)
+        let result = XCTWaiter().wait(for: [expectation], timeout: timeout)
+        XCTAssertEqual(result, .completed, message(), file: file, line: line)
+    }
+
+    private func waitForVertexCount(_ count: Int, timeout: TimeInterval,
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        let formatted = count.formatted(.number.locale(Locale(identifier: "en_US")))
+        waitFor(statusCounts, "label BEGINSWITH %@", "\(formatted) vertices ", timeout: timeout,
+                "expected \(formatted) vertices, status shows '\(statusCounts.label)'", file: file, line: line)
+    }
+
+    /// "6,146 vertices · 12,288 triangles" -> (6146, 12288)
+    private func counts() -> [Int] {
+        statusCounts.label.split(separator: "·").map { part in
+            Int(part.filter(\.isNumber)) ?? -1
+        }
+    }
+
+    private func vertexCount() -> Int { counts().first ?? -1 }
+    private func triangleCount() -> Int { counts().dropFirst().first ?? -1 }
+
+    /// "12 quads · 0 other · 0 poles" -> 12
+    private func retopoQuads(_ stats: XCUIElement) -> Int {
+        Int(stats.label.prefix { $0.isNumber }) ?? -1
+    }
+
+    private func statusMessage() -> String {
+        let message = app.staticTexts["statusMessage"]
+        return message.exists ? message.label : "none"
+    }
+}

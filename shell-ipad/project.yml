@@ -61,3 +61,20 @@ targets:
         USE_HEADERMAP: NO
         SUPPORTS_MACCATALYST: NO
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+    # `xcodebuild test -scheme Cruth` (./scripts/ipad.sh test) runs the UI smoke tests.
+    scheme:
+      testTargets:
+        - CruthUITests
+  # XCUITest smoke tests that drive the app in the simulator with synthesised touches.
+  CruthUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: CruthUITests
+    dependencies:
+      - target: Cruth
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.cruth.app.uitests
+        TARGETED_DEVICE_FAMILY: "2"
+        GENERATE_INFOPLIST_FILE: YES
