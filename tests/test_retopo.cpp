@@ -358,6 +358,17 @@ TEST(quad_pen_taps_build_chained_quads) {
     CHECK_EQ(r.stats().quads, 3u);
 }
 
+// A convex quad tapped across a crease is valid even though the surface
+// normal at its centre belongs to one side of the crease only.
+TEST(quad_pen_accepts_a_quad_across_a_crease) {
+    const Mesh cube = make_cube(2.0f);  // faces at +-1; the y = 1, z = 1 edge runs along x
+    RetopoMesh r(cube);
+    for (const Vec3& p : {Vec3{0.3f, 1, 1}, Vec3{0, 1, 0.7f}, Vec3{-0.3f, 1, 1}, Vec3{0, 0.7f, 1}}) {
+        REQUIRE(r.quad_pen_tap(p).is_ok());
+    }
+    CHECK_EQ(r.mesh().face_count(), 1u);
+}
+
 TEST(quad_pen_rejects_folded_crossed_and_repeated_quads) {
     const Mesh sphere = make_quad_sphere(5, 1.0f);
     const Vec3 a = cap_point(-0.1f, -0.1f), b = cap_point(0.1f, -0.1f);
@@ -471,7 +482,7 @@ TEST(slide_loop_between_neighbouring_rings) {
     r.update_slide(-0.5f);
     for (Index v : mid) CHECK_NEAR(r.mesh().positions[v].y, -0.25f * up, 0.01);
     r.update_slide(0.0f);
-    for (Index v : mid) CHECK(distance(r.mesh().positions[v], before[v]) < 1e-4f);
+    for (Index v : mid) CHECK(r.mesh().positions[v] == before[v]);  // t = 0 restores exactly
     // t is clamped to +-0.99, and a non-finite t is ignored.
     r.update_slide(0.99f);
     const std::vector<Vec3> at_limit = r.mesh().positions;

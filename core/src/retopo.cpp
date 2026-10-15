@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -354,9 +355,17 @@ Result<RetopoMesh::QuadPenTap> RetopoMesh::quad_pen_tap(Vec3 p) {
     for (std::size_t i = 0; i < 4; ++i) newell += cross(position[i], position[(i + 1) % 4]);
     const std::array<std::size_t, 4> wind = dot(newell, n) < 0 ? std::array<std::size_t, 4>{0, 3, 2, 1}
                                                                 : std::array<std::size_t, 4>{0, 1, 2, 3};
+    // Test the turns against the quad's own normal, not the surface normal at
+    // its centre: across a crease that belongs to one side only. A few degrees
+    // of slack keep nearly straight corners on saddles.
+    const Vec3 quad_normal = dot(newell, n) < 0 ? -newell : newell;
+    const float slack = std::sin(5.0f * std::numbers::pi_v<float> / 180.0f) * length(quad_normal);
     for (std::size_t i = 0; i < 4; ++i) {
         const Vec3 p0 = position[wind[(i + 3) % 4]], p1 = position[wind[i]], p2 = position[wind[(i + 1) % 4]];
-        if (!(dot(cross(p1 - p0, p2 - p1), n) > 0)) return reject("quad pen: the quad is crossed or not convex");
+        const Vec3 e1 = p1 - p0, e2 = p2 - p1;
+        if (!(dot(cross(e1, e2), quad_normal) > -slack * length(e1) * length(e2))) {
+            return reject("quad pen: the quad is crossed or not convex");
+        }
     }
     // A face edge u -> v that already exists means the quad would fold over
     // a neighbour or repeat a face; an edge with two faces has no free side.
@@ -535,7 +544,8 @@ Result<std::vector<Index>> RetopoMesh::insert_loop_around(std::span<const Vec3> 
         if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
             return Error{ErrorCode::InvalidArgument, "loop around: stroke points must be finite"};
         }
-    }    if (mesh_.face_count() == 0) return Error{ErrorCode::InvalidArgument, "loop around: the cage has no faces"};
+    }
+    if (mesh_.face_count() == 0) return Error{ErrorCode::InvalidArgument, "loop around: the cage has no faces"};
     std::unordered_map<std::uint64_t, std::vector<Index>> edge_faces;
     double edge_sum = 0;
     for (std::size_t f = 0; f < mesh_.face_count(); ++f) {
@@ -904,8 +914,8 @@ void RetopoMesh::update_slide(float t) {
     if (!slide_ || !std::isfinite(t)) return;  // a NaN from the shell moves nothing
     t = std::clamp(t, -0.99f, 0.99f);
     if (t != 0 && !slide_->recorded) {
-        Slide s = std::move(*slide_);
-        checkpoint();  // ends the slide, so carry it over
+        Slide s = *slide_;  // copy, so a failed checkpoint leaves the slide intact
+        checkpoint();       // ends the slide, so carry it over
         s.recorded = true;
         slide_ = std::move(s);
     }
