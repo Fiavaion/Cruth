@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 #include "cruth/document.hpp"
 
+#include "cruth/bake.hpp"
 #include "cruth/mesh_io.hpp"
 #include "cruth/primitives.hpp"
+#include "cruth/uv.hpp"
 
 namespace cruth {
 
@@ -144,6 +146,49 @@ RepairLog Document::repair_for_print(const RepairOptions& options) {
     RepairLog log = cruth::repair_for_print(repaired, options);
     set_mesh(std::move(repaired), "Repair for print");
     return log;
+}
+
+Result<GameAssetReport> Document::export_game_asset(const std::string& directory, const GameAssetOptions& options) {
+    commit_level();
+    const Mesh& high = multires_.level(multires_.top());
+    DecimateOptions d;
+    d.target_triangles = std::max<std::size_t>(options.target_triangles, 16);
+    const Mesh low = high.triangle_count() > d.target_triangles ? cruth::decimate(high, d) : high;
+
+    UnwrapOptions u;
+    u.resolution = options.texture_size;
+    UnwrapStats ustats;
+    auto uv = auto_unwrap(low, u, &ustats);
+    if (!uv) return uv.error();
+
+    std::vector<BakeMap> maps{BakeMap::TangentNormal, BakeMap::Height};
+    if (options.ambient_occlusion) maps.push_back(BakeMap::AmbientOcclusion);
+    BakeOptions b;
+    b.resolution = options.texture_size;
+    b.ao_samples = options.ao_samples;
+    BakeStats bstats;
+    auto baked = bake(low, uv.value(), high, maps, b, &bstats);
+    if (!baked) return baked.error();
+
+    GameAssetReport report;
+    report.triangles = low.triangle_count();
+    report.charts = ustats.charts;
+    report.texels = bstats.texels;
+    report.misses = bstats.misses;
+    const std::string base = directory + "/" + options.name;
+    auto s = save_mesh(low, base + ".obj", &uv.value());
+    if (!s) return s.error();
+    report.files.push_back(base + ".obj");
+    for (const auto& m : baked.value()) {
+        const bool height = m.map == BakeMap::Height;
+        const std::string path = base + "_" + bake_map_name(m.map) + (height ? ".exr" : ".png");
+        const ImageFormat fmt =
+            height ? ImageFormat::ExrFloat : (m.map == BakeMap::AmbientOcclusion ? ImageFormat::Png8 : ImageFormat::Png16);
+        auto w = write_image(m.image, path, fmt);
+        if (!w) return w.error();
+        report.files.push_back(path);
+    }
+    return report;
 }
 
 PrintReport Document::check_printability() const { return cruth::check_printability(mesh_, &bvh()); }

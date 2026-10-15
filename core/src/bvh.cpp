@@ -222,7 +222,7 @@ std::optional<RayHit> TriangleBVH::raycast(Vec3 origin, Vec3 direction, float ma
             best = dist;
             Vec3 normal = normalize(cross(e1, e2));
             if (dot(normal, dir) > 0) normal = -normal;
-            hit = RayHit{origin + dir * dist, normal, dist, triangle_face_[t]};
+            hit = RayHit{origin + dir * dist, normal, dist, triangle_face_[t], t, u, v};
         }
     }
     return hit;

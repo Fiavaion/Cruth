@@ -1,10 +1,12 @@
 add_library(cruth_core STATIC
+  src/bake.cpp
   src/bvh.cpp
   src/c_api.cpp
   src/curve.cpp
   src/decimate.cpp
   src/document.cpp
   src/half_edge.cpp
+  src/image_io.cpp
   src/mesh.cpp
   src/mesh_io.cpp
   src/multires.cpp
@@ -13,6 +15,7 @@ add_library(cruth_core STATIC
   src/raycast.cpp
   src/sculpt.cpp
   src/subdivide.cpp
+  src/uv.cpp
   src/voxel_remesh.cpp
 )
 add_library(Cruth::core ALIAS cruth_core)

@@ -101,11 +101,17 @@ MeshFormat format_from_path(std::string_view path) {
 
 // ---------------------------------------------------------------- OBJ
 
-Result<Mesh> read_obj(std::string_view text) {
+Result<Mesh> read_obj(std::string_view text, UVSet* uvs) {
     Mesh mesh;
     Scanner sc(text);
     std::vector<Index> corners;
+    std::vector<Vec2> texcoords;
+    std::vector<Index> corner_uv;
+    bool every_corner_has_uv = true;
     std::size_t line_no = 0;
+    auto resolve = [](long idx, std::size_t count) -> long {
+        return idx > 0 ? idx - 1 : static_cast<long>(count) + idx;
+    };
     while (!sc.at_end()) {
         std::string_view l = sc.line();
         ++line_no;
@@ -118,37 +124,74 @@ Result<Mesh> read_obj(std::string_view text) {
                 }
             }
             mesh.add_vertex(p);
+        } else if (tag == "vt") {
+            Vec2 t;
+            if (!parse_float(next_token(l), t.x) || !parse_float(next_token(l), t.y)) {
+                return parse_error("OBJ line " + std::to_string(line_no) + ": bad texture coordinate");
+            }
+            texcoords.push_back(t);
         } else if (tag == "f") {
             corners.clear();
             for (std::string_view tok = next_token(l); !tok.empty(); tok = next_token(l)) {
-                // "v", "v/vt", "v//vn" or "v/vt/vn" — only the position index matters here.
-                std::string_view vtok = tok.substr(0, tok.find('/'));
+                // "v", "v/vt", "v//vn" or "v/vt/vn".
+                const std::size_t slash = tok.find('/');
+                std::string_view vtok = tok.substr(0, slash);
                 long idx = 0;
                 if (!parse_long(vtok, idx) || idx == 0) {
                     return parse_error("OBJ line " + std::to_string(line_no) + ": bad face index");
                 }
-                long resolved = idx > 0 ? idx - 1 : static_cast<long>(mesh.vertex_count()) + idx;
+                const long resolved = resolve(idx, mesh.vertex_count());
                 if (resolved < 0 || resolved >= static_cast<long>(mesh.vertex_count())) {
                     return parse_error("OBJ line " + std::to_string(line_no) + ": face index out of range");
                 }
                 corners.push_back(static_cast<Index>(resolved));
+
+                long t = 0;
+                std::string_view rest = slash == std::string_view::npos ? std::string_view{} : tok.substr(slash + 1);
+                std::string_view ttok = rest.substr(0, rest.find('/'));
+                const long tr = !ttok.empty() && parse_long(ttok, t) && t != 0 ? resolve(t, texcoords.size()) : -1;
+                if (tr < 0 || tr >= static_cast<long>(texcoords.size())) {
+                    every_corner_has_uv = false;
+                    corner_uv.push_back(0);
+                } else {
+                    corner_uv.push_back(static_cast<Index>(tr));
+                }
             }
             if (corners.size() < 3) return parse_error("OBJ line " + std::to_string(line_no) + ": face has < 3 corners");
             mesh.add_face(corners);
         }
-        // vt, vn, g, o, s, usemtl, mtllib and comments are ignored in phase 0.
+        // vn, g, o, s, usemtl, mtllib and comments are ignored.
+    }
+    if (uvs) {
+        *uvs = UVSet{};
+        if (every_corner_has_uv && !texcoords.empty() && mesh.face_count() > 0) {
+            float max_u = 0;
+            for (const auto& t : texcoords) max_u = std::max(max_u, t.x);
+            uvs->uvs = std::move(texcoords);
+            uvs->corner_uv = std::move(corner_uv);
+            uvs->face_chart.assign(mesh.face_count(), 0);
+            uvs->tiles = std::max(1, int(std::ceil(max_u)));
+        }
     }
     return mesh;
 }
 
-std::string write_obj(const Mesh& mesh) {
+std::string write_obj(const Mesh& mesh, const UVSet* uvs) {
+    const bool with_uv = uvs && uvs->matches(mesh);
     std::ostringstream os;
     os << "# Cruth OBJ export\n";
     os.precision(9);
     for (const auto& p : mesh.positions) os << "v " << p.x << ' ' << p.y << ' ' << p.z << '\n';
+    if (with_uv) {
+        for (const auto& t : uvs->uvs) os << "vt " << t.x << ' ' << t.y << '\n';
+    }
     for (std::size_t f = 0; f < mesh.face_count(); ++f) {
         os << 'f';
-        for (Index v : mesh.face(f)) os << ' ' << (v + 1);
+        auto fv = mesh.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            os << ' ' << (fv[i] + 1);
+            if (with_uv) os << '/' << (uvs->corner_uv[mesh.face_offsets()[f] + i] + 1);
+        }
         os << '\n';
     }
     return os.str();
@@ -434,24 +477,25 @@ std::string write_ply_binary(const Mesh& mesh) {
 
 // ---------------------------------------------------------------- files
 
-Result<Mesh> load_mesh(const std::string& path) {
+Result<Mesh> load_mesh(const std::string& path, UVSet* uvs) {
+    if (uvs) *uvs = UVSet{};
     MeshFormat fmt = format_from_path(path);
     if (fmt == MeshFormat::Unknown) return Error{ErrorCode::UnsupportedFormat, "unsupported file type: " + path};
     std::ifstream f(path, std::ios::binary);
     if (!f) return Error{ErrorCode::Io, "cannot open " + path};
     std::string bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     switch (fmt) {
-        case MeshFormat::Obj: return read_obj(bytes);
+        case MeshFormat::Obj: return read_obj(bytes, uvs);
         case MeshFormat::Stl: return read_stl(bytes);
         case MeshFormat::Ply: return read_ply(bytes);
         default: return Error{ErrorCode::UnsupportedFormat, path};
     }
 }
 
-Status save_mesh(const Mesh& mesh, const std::string& path) {
+Status save_mesh(const Mesh& mesh, const std::string& path, const UVSet* uvs) {
     std::string bytes;
     switch (format_from_path(path)) {
-        case MeshFormat::Obj: bytes = write_obj(mesh); break;
+        case MeshFormat::Obj: bytes = write_obj(mesh, uvs); break;
         case MeshFormat::Stl: bytes = write_stl_binary(mesh); break;
         case MeshFormat::Ply:
             for (std::size_t f = 0; f < mesh.face_count(); ++f) {

@@ -32,7 +32,7 @@ std::optional<RayHit> raycast(const Mesh& mesh, Vec3 origin, Vec3 direction) {
             best = t;
             Vec3 n = normalize(cross(e1, e2));
             if (dot(n, dir) > 0) n = -n;
-            hit = RayHit{origin + dir * t, n, t, static_cast<Index>(f)};
+            hit = RayHit{origin + dir * t, n, t, static_cast<Index>(f), kInvalidIndex, u, v};
         }
     }
     return hit;

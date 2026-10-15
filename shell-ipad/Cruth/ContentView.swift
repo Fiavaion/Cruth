@@ -32,6 +32,12 @@ struct ContentView: View {
                 statusBar
             }
             .padding(12)
+
+            if session.isBusy {
+                ProgressView(session.busyLabel)
+                    .padding(20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            }
         }
         .fileImporter(isPresented: $importing,
                       allowedContentTypes: MeshFileFormat.allCases.map(\.contentType)) { result in
@@ -40,7 +46,7 @@ struct ContentView: View {
         .fileExporter(isPresented: Binding(get: { exportFile != nil }, set: { if !$0 { exportFile = nil } }),
                       document: exportFile,
                       contentType: exportFile?.contentType ?? .data,
-                      defaultFilename: "Cruth") { result in
+                      defaultFilename: exportFile?.filename ?? "Cruth") { result in
             if case let .failure(error) = result { session.message = error.localizedDescription }
         }
         .sheet(isPresented: $showPrintCheck) {
@@ -58,6 +64,15 @@ struct ContentView: View {
                         Button(format.rawValue.uppercased()) {
                             if let data = session.exportData(format) {
                                 exportFile = MeshFile(data: data, contentType: format.contentType)
+                            }
+                        }
+                    }
+                }
+                Menu("Export Game Asset", systemImage: "shippingbox") {
+                    ForEach([1024, 2048, 4096], id: \.self) { size in
+                        Button("\(size) px maps, 20k triangles") {
+                            session.exportGameAsset(textureSize: Int32(size)) { folder in
+                                exportFile = MeshFile(folder: folder)
                             }
                         }
                     }
@@ -213,24 +228,42 @@ struct BrushSettingsPanel: View {
     }
 }
 
-/// Export payload for `.fileExporter`.
+/// Export payload for `.fileExporter`: a single mesh file or a folder of
+/// asset files (one exporter serves both, which SwiftUI handles best).
 struct MeshFile: FileDocument {
-    static var readableContentTypes: [UTType] { MeshFileFormat.allCases.map(\.contentType) }
+    static var readableContentTypes: [UTType] { MeshFileFormat.allCases.map(\.contentType) + [.folder] }
 
-    var data: Data
+    enum Payload {
+        case data(Data)
+        case folder(URL)
+    }
+
+    var payload: Payload
     var contentType: UTType
+    var filename: String
 
-    init(data: Data, contentType: UTType) {
-        self.data = data
+    init(data: Data, contentType: UTType, filename: String = "Cruth") {
+        payload = .data(data)
         self.contentType = contentType
+        self.filename = filename
+    }
+
+    init(folder: URL) {
+        payload = .folder(folder)
+        contentType = .folder
+        filename = folder.lastPathComponent
     }
 
     init(configuration: ReadConfiguration) throws {
-        data = configuration.file.regularFileContents ?? Data()
+        payload = .data(configuration.file.regularFileContents ?? Data())
         contentType = configuration.contentType
+        filename = "Cruth"
     }
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: data)
+        switch payload {
+        case .data(let data): return FileWrapper(regularFileWithContents: data)
+        case .folder(let url): return try FileWrapper(url: url, options: .immediate)
+        }
     }
 }

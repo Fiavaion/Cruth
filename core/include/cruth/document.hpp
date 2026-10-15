@@ -25,6 +25,25 @@
 
 namespace cruth {
 
+// "Finish" the sculpt into a game-ready asset (PRD acceptance chain, minus
+// retopology): decimate the most detailed level, unwrap it, and bake the
+// sculpt onto it.
+struct GameAssetOptions {
+    std::string name = "cruth";
+    std::size_t target_triangles = 20000;
+    int texture_size = 2048;
+    bool ambient_occlusion = true;
+    int ao_samples = 32;
+};
+
+struct GameAssetReport {
+    std::size_t triangles = 0;
+    std::size_t charts = 0;
+    std::size_t texels = 0;
+    std::size_t misses = 0;
+    std::vector<std::string> files;
+};
+
 class Document {
 public:
     Document();
@@ -60,6 +79,10 @@ public:
     DecimateStats decimate(std::size_t target_triangles);
     RepairLog repair_for_print(const RepairOptions& options = {});
     PrintReport check_printability() const;
+
+    // Writes <name>.obj (with UVs), <name>_normal.png, <name>_ao.png and
+    // <name>_height.exr into `directory`. Does not change the document.
+    Result<GameAssetReport> export_game_asset(const std::string& directory, const GameAssetOptions& options);
 
     void clear_mask();
     void invert_mask();

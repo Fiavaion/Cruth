@@ -1,5 +1,6 @@
 # Runs the headless phase-0 chain: new -> sculpt (with multires) -> subdivide -> check ->
-# convert -> voxel remesh -> decimate, checking printability along the way.
+# convert -> voxel remesh -> decimate -> unwrap -> bake, checking printability along the
+# way and decoding the baked PNG/EXR files independently when Python is available.
 file(MAKE_DIRECTORY ${WORK})
 function(run)
   execute_process(COMMAND ${ARGV} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
@@ -18,3 +19,9 @@ run(${CLI} remesh ${WORK}/smooth.obj ${WORK}/remeshed.obj --resolution 96)
 run(${CLI} check ${WORK}/remeshed.obj)
 run(${CLI} decimate ${WORK}/remeshed.obj ${WORK}/low.obj --target 5000)
 run(${CLI} check ${WORK}/low.obj)
+run(${CLI} unwrap ${WORK}/low.obj ${WORK}/low_uv.obj --resolution 256)
+run(${CLI} bake ${WORK}/low_uv.obj ${WORK}/smooth.obj ${WORK}/head --resolution 256 --maps normal,height,vdm,ao --ao-samples 8)
+if(PYTHON)
+  file(GLOB maps ${WORK}/head_*)
+  run(${PYTHON} ${CHECKER} ${maps})
+endif()

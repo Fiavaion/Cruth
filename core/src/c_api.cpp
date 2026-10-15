@@ -357,6 +357,31 @@ CruthStatus cruth_document_repair_print(CruthDocument* doc, CruthRepairLog* log)
     });
 }
 
+CruthStatus cruth_document_export_game_asset(CruthDocument* doc, const char* directory, const char* name,
+                                             uint64_t target_triangles, int32_t texture_size,
+                                             CruthAssetReport* report) {
+    if (!doc || !directory || !name || texture_size < 64 || texture_size > 8192) {
+        return fail(CRUTH_ERROR_INVALID_ARGUMENT, "directory and name are required; texture_size must be 64..8192");
+    }
+    return guarded([&] {
+        cruth::GameAssetOptions o;
+        o.name = name;
+        o.target_triangles = static_cast<std::size_t>(target_triangles);
+        o.texture_size = texture_size;
+        auto r = doc->doc.export_game_asset(directory, o);
+        if (!r) return from_error(r.error());
+        if (report) {
+            *report = {};
+            report->triangles = r.value().triangles;
+            report->charts = r.value().charts;
+            report->texels = r.value().texels;
+            report->misses = r.value().misses;
+            report->file_count = r.value().files.size();
+        }
+        return CRUTH_OK;
+    });
+}
+
 bool cruth_undo(CruthDocument* doc) { return doc && guarded_value(false, [&] { return doc->doc.undo(); }); }
 bool cruth_redo(CruthDocument* doc) { return doc && guarded_value(false, [&] { return doc->doc.redo(); }); }
 bool cruth_can_undo(const CruthDocument* doc) { return doc && doc->doc.can_undo(); }

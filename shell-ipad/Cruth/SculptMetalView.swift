@@ -163,7 +163,8 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     // MARK: Strokes (raw touches)
 
     private func sculpts(with touch: UITouch) -> Bool {
-        touch.type == .pencil || (session.fingerSculpting && touch.type == .direct)
+        guard !session.isBusy else { return false }  // a background command owns the document
+        return touch.type == .pencil || (session.fingerSculpting && touch.type == .direct)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {

@@ -48,6 +48,24 @@ inline Vec3 normalize(Vec3 v) {
     return len > 1e-20f ? v / len : Vec3{};
 }
 
+struct Vec2 {
+    float x = 0, y = 0;
+
+    constexpr Vec2() = default;
+    constexpr Vec2(float x_, float y_) : x(x_), y(y_) {}
+
+    constexpr Vec2 operator+(Vec2 o) const { return {x + o.x, y + o.y}; }
+    constexpr Vec2 operator-(Vec2 o) const { return {x - o.x, y - o.y}; }
+    constexpr Vec2 operator*(float s) const { return {x * s, y * s}; }
+    constexpr Vec2 operator/(float s) const { return {x / s, y / s}; }
+    Vec2& operator+=(Vec2 o) { x += o.x; y += o.y; return *this; }
+    Vec2& operator-=(Vec2 o) { x -= o.x; y -= o.y; return *this; }
+    constexpr bool operator==(const Vec2&) const = default;
+};
+
+constexpr float dot(Vec2 a, Vec2 b) { return a.x * b.x + a.y * b.y; }
+constexpr float cross(Vec2 a, Vec2 b) { return a.x * b.y - a.y * b.x; }
+
 struct Bounds {
     Vec3 lo{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
             std::numeric_limits<float>::max()};

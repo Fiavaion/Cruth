@@ -160,6 +160,18 @@ void cruth_document_set_base_locked(CruthDocument* doc, bool locked);
 CruthStatus cruth_document_voxel_remesh(CruthDocument* doc, int32_t resolution);
 CruthStatus cruth_document_decimate(CruthDocument* doc, uint64_t target_triangles);
 
+/* Game asset (decimate + unwrap + bake) ------------------------------------ */
+
+typedef struct CruthAssetReport {
+    uint64_t triangles, charts, texels, misses, file_count;
+} CruthAssetReport;
+
+/* Writes <name>.obj, <name>_normal.png, <name>_ao.png and <name>_height.exr
+ * into an existing directory. texture_size: 64..8192. */
+CruthStatus cruth_document_export_game_asset(CruthDocument* doc, const char* directory, const char* name,
+                                             uint64_t target_triangles, int32_t texture_size,
+                                             CruthAssetReport* report);
+
 /* Print -------------------------------------------------------------------- */
 
 CruthStatus cruth_document_check_print(const CruthDocument* doc, CruthPrintReport* report);

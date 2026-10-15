@@ -13,12 +13,14 @@
 #include <string>
 #include <vector>
 
+#include "cruth/bake.hpp"
 #include "cruth/cruth.h"
 #include "cruth/document.hpp"
 #include "cruth/mesh_io.hpp"
 #include "cruth/primitives.hpp"
 #include "cruth/print_check.hpp"
 #include "cruth/subdivide.hpp"
+#include "cruth/uv.hpp"
 #include "cruth/voxel_remesh.hpp"
 
 using namespace cruth;
@@ -37,6 +39,12 @@ int usage() {
         "  subdivide <in> <out> [--levels N]                     Catmull-Clark\n"
         "  remesh <in> <out> [--resolution N]                    voxel remesh (8..512, default 128)\n"
         "  decimate <in> <out> --target N                        reduce to N triangles\n"
+        "  unwrap <in> <out.obj> [--tiles N] [--resolution R] [--angle DEG]\n"
+        "                                                        automatic UVs (OBJ with vt)\n"
+        "  bake <low.obj> <high> <prefix> [--maps LIST] [--resolution N] [--distance D]\n"
+        "       [--ao-samples N] [--format png8|png16|exr|exr32]\n"
+        "                                                        maps: normal,object_normal,height,vdm,ao\n"
+        "                                                        writes <prefix>_<map>.<1001+tile>.<ext>\n"
         "  convert <in> <out>                                    OBJ / STL / PLY by extension\n"
         "  sculpt <in> <script> <out>                            replay a stroke script\n"
         "  version\n"
@@ -344,6 +352,74 @@ int main(int argc, char** argv) {
         Mesh out = decimate(m.value(), o, &stats);
         std::printf("%zu -> %zu triangles\n", stats.triangles_before, stats.triangles_after);
         return save(out, args[1]);
+    }
+    if (cmd == "unwrap") {
+        UnwrapOptions o;
+        o.tiles = std::atoi(option(args, "--tiles", "1").c_str());
+        o.resolution = std::atoi(option(args, "--resolution", "2048").c_str());
+        o.max_chart_angle_degrees = std::strtof(option(args, "--angle", "60").c_str(), nullptr);
+        if (args.size() != 2 || format_from_path(args[1]) != MeshFormat::Obj) return usage();
+        auto m = load(args[0]);
+        if (!m) return fail(m.error().message);
+        UnwrapStats stats;
+        auto uv = auto_unwrap(m.value(), o, &stats);
+        if (!uv) return fail(uv.error().message);
+        std::printf("%zu charts, %.1f texels per unit at %d px, %.0f%% of each tile used, worst stretch %.2f, %zu flipped\n",
+                    stats.charts, double(stats.texels_per_unit), o.resolution, double(stats.utilisation) * 100.0,
+                    double(stats.max_stretch), count_flipped_uv_faces(m.value(), uv.value()));
+        auto s = save_mesh(m.value(), args[1], &uv.value());
+        if (!s) return fail(s.error().message);
+        std::printf("wrote %s\n", args[1].c_str());
+        return 0;
+    }
+    if (cmd == "bake") {
+        BakeOptions o;
+        o.resolution = std::atoi(option(args, "--resolution", "1024").c_str());
+        o.max_distance = std::strtof(option(args, "--distance", "0").c_str(), nullptr);
+        o.ao_samples = std::atoi(option(args, "--ao-samples", "32").c_str());
+        const std::string format = option(args, "--format", "");
+        const std::string list = option(args, "--maps", "normal,height");
+        if (args.size() != 3) return usage();
+        std::vector<BakeMap> maps;
+        for (std::size_t start = 0; start <= list.size();) {
+            const std::size_t comma = std::min(list.find(',', start), list.size());
+            const std::string name = list.substr(start, comma - start);
+            bool found = false;
+            for (BakeMap m : {BakeMap::TangentNormal, BakeMap::ObjectNormal, BakeMap::Height,
+                              BakeMap::VectorDisplacement, BakeMap::AmbientOcclusion}) {
+                if (name == bake_map_name(m)) {
+                    maps.push_back(m);
+                    found = true;
+                }
+            }
+            if (!found) return fail("unknown map '" + name + "'");
+            start = comma + 1;
+        }
+        UVSet uv;
+        auto low = load_mesh(args[0], &uv);
+        if (!low) return fail(low.error().message);
+        if (!uv.matches(low.value())) return fail(args[0] + " has no UVs; run 'cruth-cli unwrap' first");
+        auto high = load(args[1]);
+        if (!high) return fail(high.error().message);
+        BakeStats stats;
+        auto baked = bake(low.value(), uv, high.value(), maps, o, &stats);
+        if (!baked) return fail(baked.error().message);
+        std::printf("%zu texels, %zu missed (cage distance %.4g)\n", stats.texels, stats.misses, double(stats.max_distance));
+        for (const auto& m : baked.value()) {
+            // Displacement needs float range; colour-like maps default to 16-bit PNG.
+            const bool displacement = m.map == BakeMap::Height || m.map == BakeMap::VectorDisplacement;
+            std::string f = format.empty() ? (displacement ? "exr32" : "png16") : format;
+            ImageFormat fmt = f == "png8" ? ImageFormat::Png8
+                              : f == "png16" ? ImageFormat::Png16
+                              : f == "exr" ? ImageFormat::ExrHalf
+                              : ImageFormat::ExrFloat;
+            const std::string path = args[2] + "_" + bake_map_name(m.map) + "." + std::to_string(1001 + m.tile) +
+                                     (f.rfind("png", 0) == 0 ? ".png" : ".exr");
+            auto s = write_image(m.image, path, fmt);
+            if (!s) return fail(s.error().message);
+            std::printf("wrote %s\n", path.c_str());
+        }
+        return 0;
     }
     if (cmd == "convert") {
         if (args.size() != 2) return usage();

@@ -13,6 +13,10 @@ struct RayHit {
     Vec3 normal;  // geometric normal of the hit triangle, facing the ray origin
     float distance = 0;
     Index face = kInvalidIndex;
+    // Triangle of the fan triangulation (as numbered by TriangleBVH) and the
+    // barycentric weights of its second and third corners at the hit.
+    Index triangle = kInvalidIndex;
+    float u = 0, v = 0;
 };
 
 // Nearest hit along origin + t * direction, t > 0. Brute force over the fan

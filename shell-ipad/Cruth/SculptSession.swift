@@ -80,6 +80,9 @@ final class SculptSession: ObservableObject {
         didSet { if let document { cruth_document_set_base_locked(document, lockBaseLevel) } }
     }
     @Published var message: String?
+    /// True while a long command runs off the main thread; input is ignored meanwhile.
+    @Published private(set) var isBusy = false
+    @Published private(set) var busyLabel = ""
 
     /// Bumped when a new mesh replaces the old one, so the viewport can re-frame.
     @Published private(set) var documentGeneration = 0
@@ -97,12 +100,14 @@ final class SculptSession: ObservableObject {
     // MARK: Documents
 
     func newSphere() {
+        guard !isBusy else { return }
         var doc: OpaquePointer?
         let status = cruth_document_create_sphere(5, 1.0, &doc)
         replace(with: doc, status: status)
     }
 
     func open(url: URL) {
+        guard !isBusy else { return }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         var doc: OpaquePointer?
@@ -123,6 +128,38 @@ final class SculptSession: ObservableObject {
             return nil
         }
         return try? Data(contentsOf: url)
+    }
+
+    /// Decimates the most detailed level, unwraps it and bakes normal, AO and
+    /// height maps from the sculpt into a new folder, off the main thread.
+    func exportGameAsset(textureSize: Int32, completion: @escaping (URL) -> Void) {
+        guard let document, !isBusy else { return }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Cruth Asset \(textureSize)px")
+        try? FileManager.default.removeItem(at: folder)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            message = error.localizedDescription
+            return
+        }
+        isBusy = true
+        busyLabel = "Baking \(textureSize) px maps…"
+        let path = folder.path(percentEncoded: false)
+        DispatchQueue.global(qos: .userInitiated).async {
+            var report = CruthAssetReport()
+            let status = cruth_document_export_game_asset(document, path, "cruth", 20_000, textureSize, &report)
+            let detail = String(cString: cruth_last_error())
+            DispatchQueue.main.async {
+                self.isBusy = false
+                if status == CRUTH_OK {
+                    self.message = "Baked \(report.triangles) triangles, \(report.charts) UV charts"
+                    completion(folder)
+                } else {
+                    let summary = String(cString: cruth_status_string(status))
+                    self.message = detail.isEmpty ? summary : "\(summary): \(detail)"
+                }
+            }
+        }
     }
 
     private func replace(with doc: OpaquePointer?, status: CruthStatus) {
@@ -150,7 +187,7 @@ final class SculptSession: ObservableObject {
     }
 
     func beginStroke() {
-        guard let document else { return }
+        guard let document, !isBusy else { return }
         var b = coreBrush
         _ = cruth_stroke_begin(document, &b)
     }
@@ -194,18 +231,18 @@ final class SculptSession: ObservableObject {
     // MARK: Commands
 
     func undo() {
-        guard let document, cruth_undo(document) else { return }
+        guard let document, !isBusy, cruth_undo(document) else { return }
         refresh()
     }
 
     func redo() {
-        guard let document, cruth_redo(document) else { return }
+        guard let document, !isBusy, cruth_redo(document) else { return }
         refresh()
     }
 
     /// Adds a multires level on top of the stack and moves to it (PRD S-01).
     func subdivide() {
-        guard let document else { return }
+        guard let document, !isBusy else { return }
         if cruth_document_vertex_count(document) > 2_000_000 {
             message = "Mesh is already dense; subdividing again would exceed the phase-0 budget."
             return
@@ -214,7 +251,7 @@ final class SculptSession: ObservableObject {
     }
 
     func stepLevel(by delta: Int) {
-        guard let document else { return }
+        guard let document, !isBusy else { return }
         let target = Int32(level + delta)
         guard target >= 0, target < Int32(levelCount) else { return }
         run(cruth_document_set_level(document, target))
@@ -222,14 +259,14 @@ final class SculptSession: ObservableObject {
 
     /// Rebuilds the mesh as an even, closed quad surface (PRD S-02). Drops multires levels.
     func voxelRemesh(resolution: Int32) {
-        guard let document else { return }
+        guard let document, !isBusy else { return }
         run(cruth_document_voxel_remesh(document, resolution))
         if message == nil { message = "Remeshed at \(resolution) voxels" }
     }
 
     /// Reduces the triangle count by a fraction (PRD S-04). Drops multires levels.
     func decimate(keeping fraction: Double) {
-        guard let document else { return }
+        guard let document, !isBusy else { return }
         let target = max(4, UInt64(Double(cruth_document_triangle_count(document)) * fraction))
         run(cruth_document_decimate(document, target))
     }
@@ -244,13 +281,13 @@ final class SculptSession: ObservableObject {
     }
 
     func clearMask() {
-        guard let document else { return }
+        guard let document, !isBusy else { return }
         cruth_mask_clear(document)
         refresh()
     }
 
     func invertMask() {
-        guard let document else { return }
+        guard let document, !isBusy else { return }
         cruth_mask_invert(document)
         refresh()
     }
@@ -267,7 +304,7 @@ final class SculptSession: ObservableObject {
     }
 
     func repairForPrint() -> CruthRepairLog? {
-        guard let document else { return nil }
+        guard let document, !isBusy else { return nil }
         var log = CruthRepairLog()
         let status = cruth_document_repair_print(document, &log)
         guard status == CRUTH_OK else {
