@@ -7,6 +7,7 @@
 
 #include "cruth/bvh.hpp"
 #include "cruth/parallel.hpp"
+#include "cruth/tangents.hpp"
 
 namespace cruth {
 
@@ -86,6 +87,11 @@ Result<std::vector<BakedMap>> bake(const Mesh& low, const UVSet& uv, const Mesh&
         }
     }
 
+    // Same triangulation as `tris`, so entry 3 * t + k belongs to tris[t].v[k].
+    auto tangents = compute_tangents(low, uv);
+    if (!tangents) return tangents.error();
+    const CornerTangents& corner_tangents = tangents.value();
+
     std::vector<BakedMap> out;
     std::size_t covered_total = 0, miss_total = 0;
     for (int tile = 0; tile < tiles; ++tile) {
@@ -150,15 +156,19 @@ Result<std::vector<BakedMap>> bake(const Mesh& low, const UVSet& uv, const Mesh&
                                            low_normals[t.v[2]] * ref.b2);
                         if (length_squared(n) == 0) n = normalize(cross(P[1] - P[0], P[2] - P[0]));
 
-                        // Per-triangle tangent frame from UV derivatives, orthonormalised.
-                        const Vec3 e1 = P[1] - P[0], e2 = P[2] - P[0];
-                        const Vec2 d1 = t.uv[1] - t.uv[0], d2 = t.uv[2] - t.uv[0];
-                        const float det = cross(d1, d2);
-                        Vec3 T = std::abs(det) > 1e-20f ? (e1 * d2.y - e2 * d1.y) / det : e1;
-                        const Vec3 Bv = std::abs(det) > 1e-20f ? (e2 * d1.x - e1 * d2.x) / det : cross(n, e1);
-                        T = normalize(T - n * dot(n, T));
-                        const float handed = dot(cross(n, T), Bv) < 0 ? -1.0f : 1.0f;
-                        const Vec3 B = cross(n, T) * handed;
+                        // MikkTSpace frame: interpolate the corner tangents, orthonormalise against the
+                        // interpolated normal. The mirror sign comes from the nearest corner.
+                        const std::size_t c0 = std::size_t(ref.triangle) * 3;
+                        Vec3 T = corner_tangents.tangent[c0] * b0 + corner_tangents.tangent[c0 + 1] * ref.b1 +
+                                 corner_tangents.tangent[c0 + 2] * ref.b2;
+                        T = T - n * dot(n, T);
+                        if (length_squared(T) < 1e-12f) {
+                            // Degenerate corner tangents: any vector perpendicular to the normal.
+                            T = cross(n, std::abs(n.x) < 0.9f ? Vec3{1, 0, 0} : Vec3{0, 1, 0});
+                        }
+                        T = normalize(T);
+                        const std::size_t nearest = b0 >= ref.b1 && b0 >= ref.b2 ? 0 : (ref.b1 >= ref.b2 ? 1 : 2);
+                        const Vec3 B = cross(n, T) * corner_tangents.sign[c0 + nearest];
 
                         // First hit from the cage inward.
                         auto hit = bvh.raycast(p + n * reach, -n, 2.0f * reach);

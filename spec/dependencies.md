@@ -8,6 +8,7 @@ The PRD forbids GPL-family code anywhere in the shipped app. A dependency may be
 | QuadriFlow | BSD-3-Clause | **Vendored** (patched: no Boost, no external SAT, no `exit()`) | Quad remesh (R-01) |
 | LEMON | Boost Software License 1.0 | **Vendored** (header subset, no LP back-ends) | Min-cost flow for QuadriFlow |
 | Eigen | MPL-2.0 (`EIGEN_MPL2_ONLY`) | **Vendored** (`Eigen/` only) | Linear algebra for QuadriFlow |
+| MikkTSpace | zlib | **Vendored** (unmodified, upstream 3e895b4) | Tangent basis for tangent-space normal maps, matching Unity, Unreal, Blender and Godot (K-01) |
 | Instant Meshes | BSD-3-Clause | Not needed for now | QuadriFlow covers R-01; an interactive preview may use it later |
 | geometry-central | MIT | Planned | BFF parameterisation (U-01) |
 | libigl (core only) | MPL-2.0 | Planned | LSCM and ARAP; never `igl/copyleft/` |

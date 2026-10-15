@@ -11,7 +11,7 @@ Cruth is a free, MIT-licensed iPad sculpting app: sculpt → remesh → retopolo
 ```
 core/include/cruth/   public headers; cruth.h is the C API (C11, no C++ types)
 core/src/             implementations, one .cpp per header
-third_party/          vendored QuadriFlow (patched, see CRUTH_PATCHES.md), lemon subset, Eigen (MPL2-only)
+third_party/          vendored QuadriFlow (patched, see CRUTH_PATCHES.md), lemon subset, Eigen (MPL2-only), MikkTSpace (zlib)
 tools/cruth-cli/      headless CLI: every core feature is reachable from here
 tools/cruth-acceptance/ the PRD acceptance chain, timed, with pass/fail gates (phase-0 exit gate)
 tests/                unit tests (tiny framework in test.hpp), cli_chain.cmake, acceptance.cmake

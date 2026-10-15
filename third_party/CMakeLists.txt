@@ -30,3 +30,11 @@ set_target_properties(cruth_quadriflow PROPERTIES POSITION_INDEPENDENT_CODE ON C
 if(NOT MSVC)
   target_compile_options(cruth_quadriflow PRIVATE -w)
 endif()
+
+# MikkTSpace reference tangent generator (zlib licence), plain C, unmodified.
+add_library(cruth_mikktspace STATIC mikktspace/mikktspace.c)
+target_include_directories(cruth_mikktspace SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/mikktspace)
+set_target_properties(cruth_mikktspace PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(NOT MSVC)
+  target_compile_options(cruth_mikktspace PRIVATE -w)
+endif()

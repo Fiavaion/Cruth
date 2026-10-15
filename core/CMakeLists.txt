@@ -18,6 +18,7 @@ add_library(cruth_core STATIC
   src/retopo.cpp
   src/sculpt.cpp
   src/subdivide.cpp
+  src/tangents.cpp
   src/uv.cpp
   src/voxel_remesh.cpp
 )
@@ -29,4 +30,4 @@ target_include_directories(cruth_core PUBLIC
 target_compile_features(cruth_core PUBLIC cxx_std_20)
 set_target_properties(cruth_core PROPERTIES CXX_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
 find_package(Threads REQUIRED)
-target_link_libraries(cruth_core PUBLIC Threads::Threads PRIVATE cruth_warnings cruth_quadriflow)
+target_link_libraries(cruth_core PUBLIC Threads::Threads PRIVATE cruth_warnings cruth_quadriflow cruth_mikktspace)

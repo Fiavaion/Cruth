@@ -8,6 +8,7 @@
 #include "cruth/image_io.hpp"
 #include "cruth/mesh_io.hpp"
 #include "cruth/primitives.hpp"
+#include "cruth/tangents.hpp"
 #include "cruth/uv.hpp"
 #include "test.hpp"
 
@@ -20,6 +21,22 @@ Mesh bumpy_sphere() {
     Mesh m = make_quad_sphere(5, 1.0f);
     for (auto& p : m.positions) {
         if (std::abs(p.y) < 0.2f) p = p * 1.03f;
+    }
+    return m;
+}
+
+// Unit quad in the XY plane facing +Z, mapped so that u = x (or 1 - x when mirrored) and v = y.
+Mesh unit_quad(UVSet* uv, bool mirror_u, float lift_per_x = 0.0f) {
+    Mesh m;
+    const Vec2 corners[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    for (const Vec2& c : corners) m.add_vertex({c.x, c.y, c.x * lift_per_x});
+    m.add_face({0, 1, 2, 3});
+    if (uv) {
+        *uv = UVSet{};
+        for (const Vec2& c : corners) uv->uvs.push_back({mirror_u ? 1 - c.x : c.x, c.y});
+        uv->corner_uv = {0, 1, 2, 3};
+        uv->face_chart = {0};
+        uv->chart_count = 1;
     }
     return m;
 }
@@ -246,4 +263,47 @@ TEST(game_asset_export_writes_obj_and_maps) {
     CHECK(uv.matches(low.value()));
     CHECK_EQ(doc.level_count(), 3);  // the document is unchanged
     for (const auto& f : r.value().files) std::remove(f.c_str());
+}
+
+TEST(mikktspace_tangents_follow_u_axis_and_flag_mirroring) {
+    UVSet uv;
+    const Mesh plane = unit_quad(&uv, false);
+    auto t = compute_tangents(plane, uv);
+    REQUIRE(t.is_ok());
+    CHECK_EQ(t.value().tangent.size(), 6u);  // two triangles
+    for (std::size_t i = 0; i < 6; ++i) {
+        CHECK_NEAR(t.value().tangent[i].x, 1.0f, 1e-5f);
+        CHECK_NEAR(t.value().tangent[i].y, 0.0f, 1e-5f);
+        CHECK_NEAR(t.value().tangent[i].z, 0.0f, 1e-5f);
+        CHECK_NEAR(t.value().sign[i], 1.0f, 1e-6f);
+    }
+
+    UVSet mirrored_uv;
+    const Mesh mirrored = unit_quad(&mirrored_uv, true);
+    auto m = compute_tangents(mirrored, mirrored_uv);
+    REQUIRE(m.is_ok());
+    for (std::size_t i = 0; i < 6; ++i) {
+        CHECK_NEAR(m.value().tangent[i].x, -1.0f, 1e-5f);  // still follows +u, which now runs along -x
+        CHECK_NEAR(m.value().sign[i], -1.0f, 1e-6f);
+    }
+    CHECK(!compute_tangents(plane, UVSet{}).is_ok());
+}
+
+TEST(bake_tangent_normal_uses_the_uv_frame) {
+    // The high surface rises along +x, so its normal leans toward -x. In tangent space that is
+    // -T.x, and mirroring u flips which way T points.
+    const BakeMap maps[] = {BakeMap::TangentNormal};
+    const BakeOptions options{.resolution = 32, .max_distance = 0.5f, .padding = 0};
+    for (bool mirror : {false, true}) {
+        UVSet uv;
+        const Mesh low = unit_quad(&uv, mirror);
+        const Mesh high = unit_quad(nullptr, false, 0.25f);
+        auto r = bake(low, uv, high, maps, options);
+        REQUIRE(r.is_ok());
+        const Image& n = r.value()[0].image;
+        const float lean = 0.25f / std::sqrt(1.0f + 0.25f * 0.25f);
+        const float expected_r = 0.5f + 0.5f * (mirror ? lean : -lean);
+        CHECK_NEAR(n.at(16, 16, 0), expected_r, 0.01f);
+        CHECK_NEAR(n.at(16, 16, 1), 0.5f, 0.01f);
+    }
 }

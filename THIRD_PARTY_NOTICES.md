@@ -9,6 +9,7 @@ compatible with App Store distribution. Full licence texts are in each directory
 | PCG32 (header, as shipped with QuadriFlow) | — | Apache-2.0 | `third_party/quadriflow/3rd/pcg32/pcg32.h` | Random numbers inside QuadriFlow |
 | LEMON graph library (header subset) | 1.3.1 | Boost Software License 1.0 | `third_party/lemon/LICENSE` | Min-cost flow inside QuadriFlow |
 | Eigen (`Eigen/` headers only) | 3.4.0 | MPL-2.0, compiled with `EIGEN_MPL2_ONLY` | `third_party/eigen/COPYING.*` | Linear algebra inside QuadriFlow |
+| MikkTSpace | 3e895b4 (2020-03-25) | zlib | `third_party/mikktspace/LICENSE.txt` | Tangent basis for baked tangent-space normal maps |
 
 No GPL or LGPL code is included. CI rejects GPL-family SPDX headers, and Eigen's `EIGEN_MPL2_ONLY`
 turns any inclusion of non-MPL-2 Eigen code into a compile error.

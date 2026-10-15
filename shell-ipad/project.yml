@@ -33,6 +33,10 @@ targets:
       - path: ../third_party/quadriflow/src
         group: ThirdParty/QuadriFlow
         compilerFlags: ["-w", "-std=c++17"]
+      # MikkTSpace is plain C (zlib licence), built without warnings.
+      - path: ../third_party/mikktspace/mikktspace.c
+        group: ThirdParty/MikkTSpace
+        compilerFlags: ["-w"]
     # Signing for device builds: Signing.xcconfig optionally includes the
     # git-ignored Signing.local.xcconfig with your DEVELOPMENT_TEAM and
     # CRUTH_BUNDLE_ID (docs/SETUP.md). Simulator builds need neither.
@@ -50,6 +54,7 @@ targets:
           - $(SRCROOT)/../core/include
           - $(SRCROOT)/../third_party/quadriflow/src
           - $(SRCROOT)/../third_party/quadriflow/3rd
+          - $(SRCROOT)/../third_party/mikktspace
           - $(SRCROOT)/../third_party/eigen
           - $(SRCROOT)/../third_party/lemon
         GCC_PREPROCESSOR_DEFINITIONS:
