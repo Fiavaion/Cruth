@@ -7,12 +7,15 @@ import UIKit
 ///
 /// - Apple Pencil: raw coalesced touches with pressure become stroke samples.
 /// - One finger orbits, two fingers pan and pinch-zoom.
+/// - Mouse or trackpad: click-drag orbits, two-finger scroll pans, pinch zooms.
 /// - Two-finger tap undoes, three-finger tap redoes.
 /// - Pencil double-tap toggles invert; Pencil Pro squeeze toggles Smooth.
-/// - Hover (M2+ iPads) shows the brush footprint before contact.
+/// - Hover (M2+ iPads, or a pointer) shows the brush footprint before contact.
 ///
-/// With "finger sculpting" on, a single finger that lands on the model sculpts;
-/// one that lands on the background still orbits.
+/// With "finger sculpting" on, a single finger or a pointer click that lands on
+/// the model sculpts; one that lands on the background still orbits. Pointer
+/// clicks reach touchesBegan as .indirectPointer touches because Info.plist sets
+/// UIApplicationSupportsIndirectInputEvents.
 final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInteractionDelegate {
     let session: SculptSession
     private(set) var renderer: Renderer?
@@ -289,9 +292,10 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     private func sculpts(with touch: UITouch) -> Bool {
         guard !session.isBusy else { return false }  // a background command owns the document
         if touch.type == .pencil { return true }
-        // A finger sculpts only when it lands on the model; on the background it
-        // orbits, so finger sculpting still has a way to turn the view.
-        return session.fingerSculpting && touch.type == .direct && hitsModel(at: touch.location(in: self))
+        // A finger or pointer sculpts only when it lands on the model; on the
+        // background it orbits, so finger sculpting still has a way to turn the view.
+        let fingerLike = touch.type == .direct || touch.type == .indirectPointer
+        return session.fingerSculpting && fingerLike && hitsModel(at: touch.location(in: self))
     }
 
     private func hitsModel(at point: CGPoint) -> Bool {
