@@ -313,6 +313,8 @@ struct GuidesPanel: View {
                 .foregroundStyle(.secondary)
             Text("\(session.guideStrokes.count) strokes").monospacedDigit()
                 .accessibilityIdentifier("guideCount")
+            Toggle("Draw with Finger", isOn: $session.fingerSculpting)
+                .accessibilityIdentifier("fingerDrawingToggle")
             Button("Clear Guides", role: .destructive) { session.clearGuides() }
                 .disabled(session.guideStrokes.isEmpty)
                 .accessibilityIdentifier("clearGuidesButton")
@@ -348,6 +350,8 @@ struct RetopoPanel: View {
                 }
                 Stepper("Segments: \(session.stripSegments)", value: $session.stripSegments, in: 1...64)
             }
+            Toggle("Draw with Finger", isOn: $session.fingerSculpting)
+                .accessibilityIdentifier("fingerDrawingToggle")
             let s = session.retopoStats
             Text("\(s.quads) quads · \(s.triangles + s.ngons) other · \(s.poles) poles")
                 .font(.footnote)
