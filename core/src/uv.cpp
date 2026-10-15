@@ -390,6 +390,12 @@ void normalise_chart(const Mesh& mesh, Chart& chart) {
     }
     for (auto& p : chart.uv) p = p - lo;
     chart.size = hi - lo;
+    // Non-finite input positions: collapse the chart to a point so packing
+    // stays bounded and the UVs stay finite.
+    if (!std::isfinite(chart.size.x) || !std::isfinite(chart.size.y)) {
+        for (auto& p : chart.uv) p = {};
+        chart.size = {};
+    }
 }
 
 // MaxRects packing (best short side fit). A tile is a square of side `side`;
@@ -483,20 +489,26 @@ bool pack_all(const std::vector<std::vector<Chart*>>& tiles, float side, float p
 // for the current chart order.
 float fit_square(const std::vector<std::vector<Chart*>>& tiles, float pad) {
     double most_area = 0;
-    float widest = 0;
+    float longest = 0;
     for (const auto& t : tiles) {
         double a = 0;
         for (const Chart* c : t) {
             a += double(c->size.x + pad) * double(c->size.y + pad);
-            widest = std::max(widest, std::min(c->size.x, c->size.y) + pad);
+            // A cell's long side must fit whichever way it turns.
+            longest = std::max(longest, std::max(c->size.x, c->size.y) + pad);
         }
         most_area = std::max(most_area, a);
     }
-    float lo = std::max(widest, float(std::sqrt(most_area)));  // cannot be smaller
-    float hi = lo;
-    while (!pack_all(tiles, hi, pad)) {
+    float lo = std::max(longest, float(std::sqrt(most_area)));  // cannot be smaller
+    if (lo <= 0 && pack_all(tiles, 0.0f, pad)) return 0.0f;      // only empty cells
+    float hi = std::max(lo, 1e-20f);
+    // Bounded: once hi >= 2 * n * longest, some empty full-height strip at
+    // least `longest` wide survives every placement (n cells cover at most
+    // n * longest of the x axis, in at most n + 1 gaps), so every cell fits.
+    // 24 steps of 4% then doubling reach that for any chart count.
+    for (int step = 0; step < 200 && !pack_all(tiles, hi, pad); ++step) {
         lo = hi;
-        hi *= 1.04f;
+        hi *= step < 24 ? 1.04f : 2.0f;
     }
     for (int i = 0; i < 12 && hi - lo > hi * 0.003f; ++i) {
         const float mid = 0.5f * (lo + hi);

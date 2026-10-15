@@ -367,3 +367,25 @@ TEST(unwrap_is_deterministic) {
         CHECK(a.value().face_chart == b.value().face_chart);
     }
 }
+
+// Zero-area charts (all corners on one line) have a zero short side; the
+// packer must still finish and keep every UV finite and inside the tile.
+TEST(unwrap_degenerate_faces_terminate) {
+    Mesh quad;
+    for (int i = 0; i < 4; ++i) quad.add_vertex({float(i), 0, 0});
+    quad.add_face({0, 1, 2, 3});
+    Mesh tri;
+    for (int i = 0; i < 3; ++i) tri.add_vertex({float(i), 0, 0});
+    tri.add_face({0, 1, 2});
+    for (const Mesh* m : {&quad, &tri}) {
+        UnwrapStats stats;
+        auto r = auto_unwrap(*m, {}, &stats);
+        REQUIRE(r.is_ok());
+        CHECK_EQ(stats.charts, 1u);
+        CHECK(r.value().matches(*m));
+        for (const auto& t : r.value().uvs) {
+            CHECK(std::isfinite(t.x) && std::isfinite(t.y));
+            CHECK(t.x >= 0 && t.x <= 1 && t.y >= 0 && t.y <= 1);
+        }
+    }
+}
