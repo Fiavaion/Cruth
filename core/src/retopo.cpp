@@ -519,6 +519,170 @@ Result<std::vector<Index>> RetopoMesh::insert_loop(Index a, Index b, float t) {
     return loop;
 }
 
+Result<std::vector<Index>> RetopoMesh::insert_loop_around(std::span<const Vec3> stroke) {
+    if (stroke.size() < 3) return Error{ErrorCode::InvalidArgument, "loop around needs a stroke of 3+ points"};
+    if (mesh_.face_count() == 0) return Error{ErrorCode::InvalidArgument, "loop around: the cage has no faces"};
+    std::unordered_map<std::uint64_t, std::vector<Index>> edge_faces;
+    double edge_sum = 0;
+    for (std::size_t f = 0; f < mesh_.face_count(); ++f) {
+        auto fv = mesh_.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            const Index p = fv[i], q = fv[(i + 1) % fv.size()];
+            edge_faces[edge_key(p, q)].push_back(Index(f));
+            edge_sum += distance(mesh_.positions[p], mesh_.positions[q]);
+        }
+    }
+    const float mean_edge = float(edge_sum / double(mesh_.corner_count()));
+    // Local index i of the edge (fv[i], fv[i + 1]) that faces f and g share, or -1.
+    auto shared_edge = [&](Index f, Index g) {
+        auto fv = mesh_.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            const auto& on = edge_faces.at(edge_key(fv[i], fv[(i + 1) % fv.size()]));
+            if (std::find(on.begin(), on.end(), g) != on.end()) return int(i);
+        }
+        return -1;
+    };
+    // Shortest run of faces from `from` (excluded) to `to` (included) across
+    // edges, avoiding `avoid` except for `to`; empty if there is none.
+    auto shortest = [&](Index from, Index to, const std::unordered_map<Index, std::size_t>& avoid) {
+        std::unordered_map<Index, Index> parent{{from, from}};
+        std::vector<Index> queue{from};
+        for (std::size_t head = 0; head < queue.size() && !parent.count(to); ++head) {
+            auto fv = mesh_.face(queue[head]);
+            for (std::size_t i = 0; i < fv.size(); ++i) {
+                for (Index g : edge_faces.at(edge_key(fv[i], fv[(i + 1) % fv.size()]))) {
+                    if (parent.count(g) || (g != to && avoid.count(g))) continue;
+                    parent.emplace(g, queue[head]);
+                    queue.push_back(g);
+                }
+            }
+        }
+        std::vector<Index> run;
+        if (!parent.count(to)) return run;
+        for (Index f = to; f != from; f = parent.at(f)) run.push_back(f);
+        std::reverse(run.begin(), run.end());
+        return run;
+    };
+
+    // The faces under the stroke, sampled finer than the cage's edges, as a
+    // simple path: revisiting a face drops the detour since its first visit.
+    TriangleBVH cage(mesh_);
+    const int count = std::clamp(int(polyline_length(stroke, true) / (0.25f * mean_edge)) + 1, 3, 20000);
+    std::vector<Index> ring;
+    std::unordered_map<Index, std::size_t> at;
+    bool closed = false;
+    auto visit = [&](Index f) {
+        const auto it = at.find(f);
+        if (it == at.end()) {
+            at.emplace(f, ring.size());
+            ring.push_back(f);
+        } else if (it->second == 0 && ring.size() >= 3) {
+            closed = true;  // back where the stroke started
+        } else {
+            for (std::size_t i = it->second + 1; i < ring.size(); ++i) at.erase(ring[i]);
+            ring.resize(it->second + 1);
+        }
+    };
+    for (const Vec3& p : resample_polyline(stroke, count, true)) {
+        const auto hit = cage.closest_point(p);
+        if (!hit || hit->distance > 2 * mean_edge) return Error{ErrorCode::InvalidArgument, "loop around: the stroke strays off the cage"};
+        const Index f = cage.face_of(hit->triangle);
+        if (ring.empty()) {
+            visit(f);
+            continue;
+        }
+        if (f == ring.back()) continue;
+        const std::vector<Index> run = shared_edge(ring.back(), f) >= 0 ? std::vector<Index>{f} : shortest(ring.back(), f, {});
+        if (run.empty()) return Error{ErrorCode::InvalidArgument, "loop around: the stroke crosses between unconnected parts"};
+        for (Index g : run) {
+            visit(g);
+            if (closed) break;
+        }
+        if (closed) break;
+    }
+    if (!closed && ring.size() >= 2 && !(ring.size() >= 3 && shared_edge(ring.back(), ring.front()) >= 0)) {
+        // The stroke ended short of its start: close the ring the shortest way round.
+        std::vector<Index> run = shortest(ring.back(), ring.front(), at);
+        if (run.empty()) return Error{ErrorCode::InvalidArgument, "loop around: the stroke does not close round a feature"};
+        run.pop_back();  // the start face
+        for (Index g : run) visit(g);
+    }
+    const std::size_t n = ring.size();
+    if (n < 3) return Error{ErrorCode::InvalidArgument, "loop around: the stroke must go round at least three faces"};
+
+    // Where the ring enters and leaves each face (local edge indices).
+    std::vector<int> in(n), out(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const Index f = ring[i];
+        if (mesh_.face_size(f) != 4) return Error{ErrorCode::InvalidArgument, "loop around: the ring crosses a face that is not a quad"};
+        in[i] = shared_edge(f, ring[(i + n - 1) % n]);
+        out[i] = shared_edge(f, ring[(i + 1) % n]);
+        if (in[i] < 0 || out[i] < 0 || in[i] == out[i]) return Error{ErrorCode::InvalidArgument, "loop around: the ring turns back on itself"};
+        auto fv = mesh_.face(f);
+        if (edge_faces.at(edge_key(fv[out[i]], fv[(out[i] + 1) % 4])).size() != 2) {
+            return Error{ErrorCode::InvalidArgument, "loop around: the ring crosses a non-manifold edge"};
+        }
+    }
+    auto edge_at = [&](std::size_t i, int e) {
+        auto fv = mesh_.face(ring[i]);
+        return edge_key(fv[e], fv[(e + 1) % 4]);
+    };
+    for (std::size_t i = 0; i < n; ++i) {
+        if (edge_at(i, out[i]) != edge_at((i + 1) % n, in[(i + 1) % n])) {
+            return Error{ErrorCode::InvalidArgument, "loop around: neighbouring ring faces share more than one edge"};
+        }
+    }
+
+    checkpoint();
+    // One vertex in the middle of each edge between ring faces.
+    std::unordered_map<std::uint64_t, Index> cut;
+    for (std::size_t i = 0; i < n; ++i) {
+        auto fv = mesh_.face(ring[i]);
+        const Index p = fv[out[i]], q = fv[(out[i] + 1) % 4];
+        cut.emplace(edge_key(p, q), mesh_.add_vertex(snap(lerp(mesh_.positions[p], mesh_.positions[q], 0.5f))));
+    }
+    auto cut_of = [&](Index p, Index q) { return cut.at(edge_key(p, q)); };
+    std::vector<Index> loop, centre(n, kInvalidIndex);
+    Mesh rebuilt;
+    for (Index f = 0; f < mesh_.face_count(); ++f) {
+        const auto it = at.find(f);
+        if (it == at.end()) {
+            rebuilt.add_face(mesh_.face(f));
+            continue;
+        }
+        const std::size_t i = it->second;
+        std::array<Index, 4> c{};
+        std::copy_n(mesh_.face(f).begin(), 4, c.begin());
+        if ((out[i] - in[i] + 4) % 4 == 2) {
+            // Straight across: two quads either side of the cut.
+            const int k = in[i];
+            const Index qa = c[k], qb = c[(k + 1) % 4], qc = c[(k + 2) % 4], qd = c[(k + 3) % 4];
+            const Index p = cut_of(qa, qb), q = cut_of(qc, qd);
+            rebuilt.add_face({qa, p, q, qd});
+            rebuilt.add_face({p, qb, qc, q});
+        } else {
+            // Round the corner at c[k + 1]: three quads about a centre, which
+            // the loop passes through (the quarter at the corner, two halves).
+            const int k = (in[i] + 1) % 4 == out[i] ? in[i] : out[i];
+            const Index c0 = c[k], c1 = c[(k + 1) % 4], c2 = c[(k + 2) % 4], c3 = c[(k + 3) % 4];
+            const Index m = cut_of(c0, c1), e = cut_of(c1, c2);
+            centre[i] = mesh_.add_vertex(snap(mesh_.positions[m] + mesh_.positions[e] - mesh_.positions[c1]));
+            rebuilt.add_face({m, c1, e, centre[i]});
+            rebuilt.add_face({e, c2, c3, centre[i]});
+            rebuilt.add_face({c3, c0, m, centre[i]});
+        }
+    }
+    rebuilt.positions = mesh_.positions;
+    // The loop in ring order: each face's entry cut, then its centre if it turns.
+    for (std::size_t i = 0; i < n; ++i) {
+        auto fv = mesh_.face(ring[i]);
+        loop.push_back(cut_of(fv[in[i]], fv[(in[i] + 1) % 4]));
+        if (centre[i] != kInvalidIndex) loop.push_back(centre[i]);
+    }
+    mesh_ = std::move(rebuilt);
+    return loop;
+}
+
 void RetopoMesh::move_vertex(Index v, Vec3 p) {
     if (v >= mesh_.vertex_count()) return;
     checkpoint();

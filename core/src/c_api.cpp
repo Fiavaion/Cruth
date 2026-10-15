@@ -457,6 +457,29 @@ CruthStatus cruth_retopo_slide_loop(CruthRetopo* retopo, uint32_t a, uint32_t b,
     });
 }
 
+CruthStatus cruth_retopo_insert_loop(CruthRetopo* retopo, uint32_t a, uint32_t b, float t, uint32_t* loop_vertices) {
+    if (!retopo) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    if (loop_vertices) *loop_vertices = 0;
+    return guarded([&] {
+        auto r = retopo->retopo.insert_loop(a, b, t);
+        if (!r) return from_error(r.error());
+        if (loop_vertices) *loop_vertices = static_cast<uint32_t>(r.value().size());
+        return CRUTH_OK;
+    });
+}
+
+CruthStatus cruth_retopo_insert_loop_around(CruthRetopo* retopo, const CruthVec3* stroke, uint32_t count,
+                                            uint32_t* loop_vertices) {
+    if (!retopo || !stroke) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    if (loop_vertices) *loop_vertices = 0;
+    return guarded([&] {
+        auto r = retopo->retopo.insert_loop_around(to_points(stroke, count));
+        if (!r) return from_error(r.error());
+        if (loop_vertices) *loop_vertices = static_cast<uint32_t>(r.value().size());
+        return CRUTH_OK;
+    });
+}
+
 bool cruth_retopo_undo(CruthRetopo* retopo) {
     return retopo && guarded_value(false, [&] { return retopo->retopo.undo(); });
 }

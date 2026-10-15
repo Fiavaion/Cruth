@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
 #include "cruth/cruth.h"
 #include "cruth/document.hpp"
@@ -571,6 +572,173 @@ TEST(c_api_slide_loop_and_undo) {
     CHECK(cruth_retopo_slide_loop(retopo, a, a, 0.5f) == CRUTH_ERROR_INVALID_ARGUMENT);
     CHECK(cruth_retopo_slide_loop_begin(nullptr, a, b, nullptr) == CRUTH_ERROR_INVALID_ARGUMENT);
     CHECK(!cruth_retopo_undo(nullptr));
+    cruth_retopo_destroy(retopo);
+    cruth_document_destroy(doc);
+}
+
+namespace {
+
+// A closed stroke of `n` points on the unit sphere's top cap, radius r round
+// (cx, cz), optionally with a spike out to radius r + spike and back.
+std::vector<Vec3> circle_on_cap(float r, int n, float spike = 0, float cx = 0, float cz = 0) {
+    std::vector<Vec3> pts;
+    for (int i = 0; i < n; ++i) {
+        const float a = 6.2831853f * float(i) / float(n);
+        pts.push_back(cap_point(cx + r * std::cos(a), cz + r * std::sin(a)));
+        if (i == n / 2 && spike > 0) {
+            pts.push_back(cap_point(cx + (r + spike) * std::cos(a), cz + (r + spike) * std::sin(a)));
+            pts.push_back(cap_point(cx + r * std::cos(a), cz + r * std::sin(a)));
+        }
+    }
+    return pts;
+}
+
+// Largest distance from the given vertices to the reference.
+double gap_of(const RetopoMesh& r, const Mesh& reference, const std::vector<Index>& vertices) {
+    TriangleBVH bvh(reference);
+    double worst = 0;
+    for (Index v : vertices) worst = std::max(worst, double(bvh.closest_point(r.mesh().positions[v])->distance));
+    return worst;
+}
+
+// Checks the loop is closed through mesh edges and the cage stays all-quad and watertight.
+void check_closed_loop(const RetopoMesh& r, const std::vector<Index>& loop) {
+    std::unordered_set<std::uint64_t> edges;
+    const Mesh& m = r.mesh();
+    for (std::size_t f = 0; f < m.face_count(); ++f) {
+        auto fv = m.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            Index p = fv[i], q = fv[(i + 1) % fv.size()];
+            if (p > q) std::swap(p, q);
+            edges.insert((std::uint64_t(p) << 32) | q);
+        }
+    }
+    for (std::size_t i = 0; i < loop.size(); ++i) {
+        Index p = loop[i], q = loop[(i + 1) % loop.size()];
+        if (p > q) std::swap(p, q);
+        CHECK(edges.count((std::uint64_t(p) << 32) | q));
+    }
+    const RetopoStats s = r.stats();
+    CHECK_EQ(s.triangles + s.ngons, 0u);
+    CHECK_EQ(s.boundary_edges, 0u);
+    CHECK(check_printability(m).watertight());
+}
+
+}  // namespace
+
+TEST(insert_loop_around_a_feature) {
+    // Level-2 cube sphere (4x4 quads per side); (0, 1, 0) is a vertex in the middle of the top side.
+    const Mesh sphere = make_quad_sphere(5, 1.0f);
+    const Mesh cage = make_quad_sphere(2, 1.0f);
+    RetopoMesh r(sphere, cage);
+    const std::size_t faces = cage.face_count();
+
+    // Round the middle vertex: four quads, each turning a corner.
+    auto small = r.insert_loop_around(circle_on_cap(0.12f, 24));
+    REQUIRE(small.is_ok());
+    CHECK_EQ(small.value().size(), 8u);  // four cuts and four centres
+    CHECK_EQ(r.mesh().face_count(), faces + 8u);
+    check_closed_loop(r, small.value());
+    CHECK(gap_of(r, sphere, small.value()) < 1e-4);  // new vertices sit on the reference
+    for (Index v : small.value()) CHECK(length(r.mesh().positions[v] - Vec3{0, 1, 0}) < 0.3f);
+    REQUIRE(r.undo());
+    CHECK(r.mesh().positions == cage.positions);
+    CHECK_EQ(r.mesh().face_count(), faces);
+
+    // A spike off the stroke into a neighbouring face is dropped.
+    auto spiked = r.insert_loop_around(circle_on_cap(0.12f, 24, 0.25f));
+    REQUIRE(spiked.is_ok());
+    CHECK_EQ(spiked.value().size(), 8u);
+    REQUIRE(r.undo());
+
+    // Round the middle 2x2 block: straight quads along the sides, corners turning.
+    // Each straight quad adds one face and each corner two, one per loop vertex.
+    auto wide = r.insert_loop_around(circle_on_cap(0.4f, 48));
+    REQUIRE(wide.is_ok());
+    CHECK(wide.value().size() >= 12u);
+    CHECK_EQ(r.mesh().face_count(), faces + wide.value().size());
+    check_closed_loop(r, wide.value());
+    CHECK(gap_of(r, sphere, wide.value()) < 1e-4);
+    // A second loop inside the first one also works on the new topology.
+    auto inner = r.insert_loop_around(circle_on_cap(0.12f, 24));
+    REQUIRE(inner.is_ok());
+    check_closed_loop(r, inner.value());
+
+    // Failures leave the cage and its history alone.
+    RetopoMesh fresh(sphere, cage);
+    CHECK(!fresh.insert_loop_around(std::vector<Vec3>{{0, 1, 0}, {0.1f, 1, 0}}).is_ok());
+    CHECK(!fresh.insert_loop_around(circle_on_cap(0.01f, 8, 0, 0.13f, 0.13f)).is_ok());  // inside one face
+    std::vector<Vec3> far = circle_on_cap(0.12f, 24);
+    for (auto& p : far) p = p * 3.0f;
+    CHECK(!fresh.insert_loop_around(far).is_ok());
+    CHECK(!fresh.can_undo());
+    // A triangle in the ring.
+    Mesh mixed;
+    mixed.positions = cage.positions;
+    for (std::size_t f = 0; f < cage.face_count(); ++f) {
+        auto fv = cage.face(f);
+        const Vec3 c = cage.face_centroid(f);
+        if (c.y > 0.8f && c.x > 0 && c.z > 0 && c.x < 0.3f && c.z < 0.3f) {
+            mixed.add_face({fv[0], fv[1], fv[2]});
+            mixed.add_face({fv[0], fv[2], fv[3]});
+        } else {
+            mixed.add_face(fv);
+        }
+    }
+    RetopoMesh tri(sphere, mixed);
+    REQUIRE(tri.stats().triangles == 2u);
+    CHECK(!tri.insert_loop_around(circle_on_cap(0.12f, 24)).is_ok());
+    CHECK_EQ(tri.mesh().face_count(), mixed.face_count());
+}
+
+TEST(c_api_insert_loops) {
+    CruthDocument* doc = nullptr;
+    REQUIRE(cruth_document_create_sphere(4, 1.0f, &doc) == CRUTH_OK);
+    CruthRetopo* retopo = nullptr;
+    REQUIRE(cruth_retopo_begin(doc, &retopo) == CRUTH_OK);
+    for (int i = 0; i < 4; ++i) {
+        const float y = -0.45f + 0.3f * float(i);
+        const CruthVec3 stroke[2] = {{-1.2f, y, 0.5f}, {1.2f, y, 0.5f}};
+        REQUIRE(cruth_retopo_add_contour(retopo, stroke, 2, 12, {0, 0, -1}) == CRUTH_OK);
+    }
+    CHECK_EQ(cruth_retopo_stats(retopo).quads, 36u);
+    uint32_t a = 0, b = 0, made = 0;
+    REQUIRE(cruth_retopo_nearest_edge(retopo, {0.0f, -0.3f, 1.0f}, &a, &b));
+    CHECK(cruth_retopo_insert_loop(retopo, a, b, 0.5f, &made) == CRUTH_OK);
+    CHECK(made >= 2u);
+    CHECK(cruth_retopo_undo(retopo));
+    CHECK(cruth_retopo_insert_loop(retopo, a, a, 0.5f, &made) == CRUTH_ERROR_INVALID_ARGUMENT);
+    CHECK_EQ(made, 0u);
+
+    // Round the vertex nearest the front of the tube: the four quads around it.
+    std::vector<CruthVec3> ring;
+    for (int i = 0; i < 16; ++i) {
+        const float t = 6.2831853f * float(i) / 16.0f;
+        const Vec3 p = normalize(Vec3{0.12f * std::cos(t), 0.12f * std::sin(t), 1.0f});
+        ring.push_back({p.x, p.y, p.z});
+    }
+    // Centre the stroke on a cage vertex near (0, 0, 1) so it circles exactly that vertex.
+    std::vector<float> seg(cruth_retopo_copy_edges(retopo, nullptr, 0) * 6);
+    cruth_retopo_copy_edges(retopo, seg.data(), seg.size());
+    Vec3 hub{0, 0, 1};
+    float best = 1e9f;
+    for (std::size_t i = 0; i < seg.size(); i += 3) {
+        const Vec3 p{seg[i], seg[i + 1], seg[i + 2]};
+        if (std::abs(p.y) < 0.2f && distance(p, {0, 0, 1}) < best) {
+            best = distance(p, {0, 0, 1});
+            hub = p;
+        }
+    }
+    for (auto& p : ring) {
+        const Vec3 q = normalize(Vec3{p.x, p.y, p.z} + hub - Vec3{0, 0, 1});
+        p = {q.x, q.y, q.z};
+    }
+    CHECK(cruth_retopo_insert_loop_around(retopo, ring.data(), uint32_t(ring.size()), &made) == CRUTH_OK);
+    CHECK_EQ(made, 8u);
+    CHECK_EQ(cruth_retopo_stats(retopo).quads, 36u + 8u);
+    CHECK_EQ(cruth_retopo_stats(retopo).triangles + cruth_retopo_stats(retopo).ngons, 0u);
+    CHECK(cruth_retopo_insert_loop_around(retopo, ring.data(), 2, &made) == CRUTH_ERROR_INVALID_ARGUMENT);
+    CHECK(cruth_retopo_insert_loop_around(retopo, nullptr, 0, nullptr) == CRUTH_ERROR_INVALID_ARGUMENT);
     cruth_retopo_destroy(retopo);
     cruth_document_destroy(doc);
 }

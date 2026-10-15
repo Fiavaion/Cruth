@@ -228,6 +228,21 @@ void cruth_retopo_slide_loop_end(CruthRetopo* retopo);
 /* begin + update + end in one call. */
 CruthStatus cruth_retopo_slide_loop(CruthRetopo* retopo, uint32_t a, uint32_t b, float t);
 
+/* Insert loop (T-03) across the quad ring through edge (a, b), each ring edge cut
+ * at fraction t (0.01..0.99) from a's side. The ring runs on until a border, a
+ * non-quad face (which absorbs the cut) or back to its start. loop_vertices
+ * (nullable) receives the new loop's vertex count. */
+CruthStatus cruth_retopo_insert_loop(CruthRetopo* retopo, uint32_t a, uint32_t b, float t, uint32_t* loop_vertices);
+/* Closed loop around a feature (T-03): stroke = points on the surface drawn
+ * round the feature over the cage (ends are joined). A new edge loop runs
+ * through the middle of the ring of quads under the stroke; corners become
+ * three quads round a centre vertex, so the cage stays all-quad and nothing
+ * outside the ring changes. Fails (CRUTH_ERROR_INVALID_ARGUMENT, nothing
+ * changed) when the ring crosses a non-quad, strays off the cage or is shorter
+ * than 3 faces. loop_vertices (nullable) receives the loop's vertex count. */
+CruthStatus cruth_retopo_insert_loop_around(CruthRetopo* retopo, const CruthVec3* stroke, uint32_t count,
+                                            uint32_t* loop_vertices);
+
 /* Undo history of cage edits (strips, contours, quads, loops, slides, relax),
  * separate from the document's: cruth_retopo_apply is the document's undo step. */
 bool cruth_retopo_undo(CruthRetopo* retopo);

@@ -11,7 +11,7 @@
 // - bridge       two vertex chains or loops -> quads          (T-02 Bridge)
 // - add_quad     four points -> one quad                      (T-02 Quad-pen)
 // - quad_pen_tap single taps -> quads, chained into strips      (T-02 Quad-pen)
-// - insert_loop / slide begin..end / move_vertex / relax / delete_face (T-03)
+// - insert_loop / insert_loop_around / slide / move_vertex / relax / delete_face (T-03)
 //
 // Every edit is one undo step on the cage's own history (undo / redo).
 //
@@ -130,6 +130,19 @@ public:
     // vertex, so the mesh stays watertight). Where the ring crosses itself, the
     // quad is split into four. Returns the new loop's vertices.
     Result<std::vector<Index>> insert_loop(Index a, Index b, float t = 0.5f);
+
+    // Closed loop around a feature (T-03 Insert loop, guided by a stroke). The
+    // stroke is drawn on the cage round the feature (its ends are joined) and
+    // picks the closed ring of quads it passes through; a new edge loop runs
+    // through their middles. Quads the ring crosses straight split in two;
+    // quads where it turns a corner become three quads round a new centre
+    // vertex. So unlike insert_loop, the cut never runs past the stroke, and
+    // the cage stays all-quad and watertight with nothing outside the ring
+    // changed. Gaps between the faces under the stroke are bridged by the
+    // shortest face path, and stretches where it doubles back are dropped.
+    // Fails if the ring crosses a non-quad, the stroke strays off the cage, or
+    // the ring has fewer than three faces. Returns the new loop in order.
+    Result<std::vector<Index>> insert_loop_around(std::span<const Vec3> stroke);
 
     void move_vertex(Index v, Vec3 p);  // one undo step per call
     // Surface-snapped tangential smoothing; boundary vertices stay put unless asked.
