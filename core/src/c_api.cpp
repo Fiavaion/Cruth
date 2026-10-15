@@ -301,6 +301,17 @@ CruthStatus cruth_document_voxel_remesh(CruthDocument* doc, int32_t resolution) 
     });
 }
 
+CruthStatus cruth_document_quad_remesh(CruthDocument* doc, uint64_t target_faces, bool preserve_sharp) {
+    if (!doc || target_faces < 8) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "target must be >= 8 faces");
+    return guarded([&] {
+        cruth::QuadRemeshOptions options;
+        options.target_faces = static_cast<std::size_t>(target_faces);
+        options.preserve_sharp = preserve_sharp;
+        auto result = doc->doc.quad_remesh(options);
+        return result ? CRUTH_OK : from_error(result.error());
+    });
+}
+
 CruthStatus cruth_document_decimate(CruthDocument* doc, uint64_t target_triangles) {
     if (!doc || target_triangles < 4) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "target must be >= 4 triangles");
     return guarded([&] {

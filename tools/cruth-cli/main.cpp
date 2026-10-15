@@ -19,6 +19,7 @@
 #include "cruth/mesh_io.hpp"
 #include "cruth/primitives.hpp"
 #include "cruth/print_check.hpp"
+#include "cruth/quad_remesh.hpp"
 #include "cruth/subdivide.hpp"
 #include "cruth/uv.hpp"
 #include "cruth/voxel_remesh.hpp"
@@ -39,6 +40,8 @@ int usage() {
         "  subdivide <in> <out> [--levels N]                     Catmull-Clark\n"
         "  remesh <in> <out> [--resolution N]                    voxel remesh (8..512, default 128)\n"
         "  decimate <in> <out> --target N                        reduce to N triangles\n"
+        "  quadremesh <in> <out> [--faces N] [--sharp] [--adaptive]\n"
+        "                                                        field-aligned all-quad remesh\n"
         "  unwrap <in> <out.obj> [--tiles N] [--resolution R] [--angle DEG]\n"
         "                                                        automatic UVs (OBJ with vt)\n"
         "  bake <low.obj> <high> <prefix> [--maps LIST] [--resolution N] [--distance D]\n"
@@ -61,6 +64,7 @@ int usage() {
         "  lock-base on|off  keep level 0 fixed when finer levels change\n"
         "  remesh [N]        voxel remesh at resolution N\n"
         "  decimate N        reduce to N triangles\n"
+        "  quadremesh N      field-aligned quad remesh to about N faces\n"
         "brush types: standard clay inflate smooth flatten pinch crease grab mask\n",
         stderr);
     return 64;
@@ -249,6 +253,11 @@ int run_sculpt(const std::string& in_path, const std::string& script_path, const
             in >> o.resolution;
             auto r = doc.voxel_remesh(o);
             if (!r) return fail(where() + r.error().message);
+        } else if (cmd == "quadremesh") {
+            QuadRemeshOptions o;
+            if (!(in >> o.target_faces) || o.target_faces < 8) return fail(where() + "expected 'quadremesh N' with N >= 8");
+            auto r = doc.quad_remesh(o);
+            if (!r) return fail(where() + r.error().message);
         } else if (cmd == "decimate") {
             std::size_t target = 0;
             if (!(in >> target) || target < 4) return fail(where() + "expected 'decimate N' with N >= 4");
@@ -339,6 +348,21 @@ int main(int argc, char** argv) {
         if (!out) return fail(out.error().message);
         std::printf("grid %d x %d x %d, voxel %.6g%s\n", stats.grid[0], stats.grid[1], stats.grid[2],
                     double(stats.voxel_size), stats.input_decimated ? " (input decimated first)" : "");
+        return save(out.value(), args[1]);
+    }
+    if (cmd == "quadremesh") {
+        QuadRemeshOptions o;
+        o.target_faces = static_cast<std::size_t>(std::atol(option(args, "--faces", "5000").c_str()));
+        o.preserve_sharp = flag(args, "--sharp");
+        o.adaptive = flag(args, "--adaptive");
+        if (args.size() != 2 || o.target_faces < 8) return usage();
+        auto m = load(args[0]);
+        if (!m) return fail(m.error().message);
+        QuadRemeshStats stats;
+        auto out = quad_remesh(m.value(), o, &stats);
+        if (!out) return fail(out.error().message);
+        std::printf("%zu faces (%zu quads) from %zu triangles%s\n", stats.faces, stats.quads, stats.input_triangles,
+                    stats.input_decimated ? " (input decimated first)" : "");
         return save(out.value(), args[1]);
     }
     if (cmd == "decimate") {

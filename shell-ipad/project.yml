@@ -27,6 +27,9 @@ targets:
       - path: ../core/include
         group: Core
         buildPhase: none
+      - path: ../third_party/quadriflow/src
+        group: ThirdParty/QuadriFlow
+        compilerFlags: ["-w"]
     settings:
       base:
         PRODUCT_NAME: Cruth
@@ -36,5 +39,13 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: Cruth/Cruth-Bridging-Header.h
         HEADER_SEARCH_PATHS:
           - $(SRCROOT)/../core/include
+          - $(SRCROOT)/../third_party/quadriflow/src
+          - $(SRCROOT)/../third_party/quadriflow/3rd
+          - $(SRCROOT)/../third_party/eigen
+          - $(SRCROOT)/../third_party/lemon
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - $(inherited)
+          - EIGEN_MPL2_ONLY
+          - QUADRIFLOW_NO_EXTERNAL_SAT
         SUPPORTS_MACCATALYST: NO
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO

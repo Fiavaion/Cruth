@@ -8,6 +8,8 @@
 #include "cruth/document.hpp"
 #include "cruth/multires.hpp"
 #include "cruth/primitives.hpp"
+#include "cruth/quad_remesh.hpp"
+#include "cruth/subdivide.hpp"
 #include "cruth/print_check.hpp"
 #include "cruth/raycast.hpp"
 #include "cruth/voxel_remesh.hpp"
@@ -280,4 +282,37 @@ TEST(c_api_multires_and_remesh) {
     CHECK(r.watertight);
     CHECK_EQ(r.self_intersections, 0u);
     cruth_document_destroy(doc);
+}
+
+TEST(quad_remesh_sphere_all_quads_near_target) {
+    Mesh sphere = make_quad_sphere(4, 1.0f);
+    QuadRemeshOptions o;
+    o.target_faces = 600;
+    QuadRemeshStats stats;
+    auto r = quad_remesh(sphere, o, &stats);
+    REQUIRE(r.is_ok());
+    const Mesh& m = r.value();
+    CHECK(stats.faces > 400 && stats.faces < 800);
+    CHECK(stats.quads * 100 >= stats.faces * 98);  // essentially all quads
+    PrintReport p = check_printability(m);
+    CHECK(p.watertight());
+    CHECK_EQ(p.shells, 1u);
+    CHECK(p.volume > 0);
+    CHECK(sphere_error(m, 1.0f) < 0.01);
+    // The result feeds multires: it must build a half-edge mesh and subdivide.
+    CHECK(subdivide_catmull_clark(m).is_ok());
+}
+
+TEST(quad_remesh_document_command_and_errors) {
+    Document doc(make_quad_sphere(3, 1.0f));
+    QuadRemeshOptions o;
+    o.target_faces = 300;
+    auto r = doc.quad_remesh(o);
+    REQUIRE(r.is_ok());
+    CHECK(doc.mesh().face_count() > 150);
+    CHECK(doc.undo());
+    CHECK_EQ(doc.mesh().face_count(), 384u);
+    o.target_faces = 2;
+    CHECK(!quad_remesh(make_cube(), o).is_ok());
+    CHECK(!quad_remesh(Mesh{}, QuadRemeshOptions{}).is_ok());
 }

@@ -206,7 +206,7 @@ final class SculptSession: ObservableObject {
     }
 
     func raycast(origin: SIMD3<Float>, direction: SIMD3<Float>) -> (position: SIMD3<Float>, normal: SIMD3<Float>)? {
-        guard let document else { return nil }
+        guard let document, !isBusy else { return nil }
         var hit = CruthRayHit()
         let found = cruth_document_raycast(document,
                                            CruthVec3(x: origin.x, y: origin.y, z: origin.z),
@@ -247,7 +247,7 @@ final class SculptSession: ObservableObject {
             message = "Mesh is already dense; subdividing again would exceed the phase-0 budget."
             return
         }
-        run(cruth_document_subdivide(document, 1))
+        runInBackground("Subdividing…") { cruth_document_subdivide($0, 1) }
     }
 
     func stepLevel(by delta: Int) {
@@ -259,16 +259,47 @@ final class SculptSession: ObservableObject {
 
     /// Rebuilds the mesh as an even, closed quad surface (PRD S-02). Drops multires levels.
     func voxelRemesh(resolution: Int32) {
-        guard let document, !isBusy else { return }
-        run(cruth_document_voxel_remesh(document, resolution))
-        if message == nil { message = "Remeshed at \(resolution) voxels" }
+        runInBackground("Voxel remeshing at \(resolution)…", done: "Remeshed at \(resolution) voxels") {
+            cruth_document_voxel_remesh($0, resolution)
+        }
+    }
+
+    /// Field-aligned all-quad remesh of the most detailed level (PRD R-01). Drops multires levels.
+    func quadRemesh(faces: UInt64) {
+        runInBackground("Quad remeshing to \(faces) faces…", done: "Quad remeshed") {
+            cruth_document_quad_remesh($0, faces, false)
+        }
     }
 
     /// Reduces the triangle count by a fraction (PRD S-04). Drops multires levels.
     func decimate(keeping fraction: Double) {
         guard let document, !isBusy else { return }
         let target = max(4, UInt64(Double(cruth_document_triangle_count(document)) * fraction))
-        run(cruth_document_decimate(document, target))
+        runInBackground("Decimating…") { cruth_document_decimate($0, target) }
+    }
+
+    /// Runs a long document command off the main thread. While it runs, input,
+    /// other commands, picking and drawing are suspended, so nothing else
+    /// touches the document.
+    private func runInBackground(_ label: String, done: String? = nil,
+                                 _ work: @escaping (OpaquePointer) -> CruthStatus) {
+        guard let document, !isBusy else { return }
+        isBusy = true
+        busyLabel = label
+        DispatchQueue.global(qos: .userInitiated).async {
+            let status = work(document)
+            let detail = String(cString: cruth_last_error())
+            DispatchQueue.main.async {
+                self.isBusy = false
+                if status == CRUTH_OK {
+                    self.message = done
+                    self.refresh()
+                } else {
+                    let summary = String(cString: cruth_status_string(status))
+                    self.message = detail.isEmpty ? summary : "\(summary): \(detail)"
+                }
+            }
+        }
     }
 
     private func run(_ status: CruthStatus) {

@@ -159,6 +159,8 @@ void cruth_document_set_base_locked(CruthDocument* doc, bool locked);
 /* resolution: voxels along the longest side, 8..512. */
 CruthStatus cruth_document_voxel_remesh(CruthDocument* doc, int32_t resolution);
 CruthStatus cruth_document_decimate(CruthDocument* doc, uint64_t target_triangles);
+/* Field-aligned quad remesh of the most detailed level (QuadriFlow). target_faces >= 8. */
+CruthStatus cruth_document_quad_remesh(CruthDocument* doc, uint64_t target_faces, bool preserve_sharp);
 
 /* Game asset (decimate + unwrap + bake) ------------------------------------ */
 

@@ -18,6 +18,7 @@
 #include "cruth/mesh.hpp"
 #include "cruth/multires.hpp"
 #include "cruth/print_check.hpp"
+#include "cruth/quad_remesh.hpp"
 #include "cruth/raycast.hpp"
 #include "cruth/result.hpp"
 #include "cruth/sculpt.hpp"
@@ -76,6 +77,7 @@ public:
 
     // Topology commands; each replaces the object and resets multires.
     Result<VoxelRemeshStats> voxel_remesh(const VoxelRemeshOptions& options);
+    Result<QuadRemeshStats> quad_remesh(const QuadRemeshOptions& options);
     DecimateStats decimate(std::size_t target_triangles);
     RepairLog repair_for_print(const RepairOptions& options = {});
     PrintReport check_printability() const;

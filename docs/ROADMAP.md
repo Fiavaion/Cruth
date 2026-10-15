@@ -17,6 +17,7 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 - [x] Exact undo and redo for strokes, level changes and topology steps (L-04, linear)
 - [x] Voxel remesh, CPU reference: per-shell signed distance, CSG union, row-wise bit-parallel flood fill, surface nets, manifold repair, relax and project, multithreaded (S-02)
 - [x] Decimation by quadric edge collapse (S-04)
+- [x] Quad remesh: QuadriFlow vendored without Boost or external processes; large flow problems solved by one capacity-scaling min-cost max-flow with a bypass arc (5.7x faster than lemon's preflow + network simplex); relax, untangle and project post-pass; Document, C API, CLI and iPad menu (R-01, R-03 input cap)
 - [x] OBJ, STL and PLY I/O (P-06 and P-07, geometry only)
 - [x] Print check and repair, including self-intersections and non-manifold vertex splitting (X-01, X-02)
 - [x] Automatic UVs: charts, LSCM (conjugate gradient), packing with padding, UDIM, distortion and flip metrics; OBJ UV I/O (U-01, U-04, U-06 data)
@@ -33,6 +34,8 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 | Voxel remesh, 512 | 98k quads → 1.06M quads | 3.9 s |
 | Decimate | 74k → 5k triangles | 0.3 s |
 | Print check with self-intersections | 98k quads | 0.4 s |
+| Quad remesh to 5k | 197k-triangle head | 4.9 s |
+| Quad remesh to 20k | 197k-triangle head | 24 s (was 134 s before the flow change) |
 | Unwrap | 1.5k-quad sphere, 8 charts | < 0.01 s |
 | Bake normal + height + AO (16 spp) + VDM, 512² | 12k → 98k-quad source | 0.8 s |
 
@@ -44,14 +47,15 @@ PRD target: 512³ in ≤ 1 s on M4 and ≤ 3 s on A14, through the Metal compute
 - Remesh projection can leave 1–3 self-intersecting triangle pairs at sharp creases at very high resolution.
 - Multires detail is stored in object space, so detail does not rotate with large lower-level edits. Tangent-space detail is needed.
 - Remesh, decimate and subdivide run on the main thread in the iPad shell; only Export Game Asset runs in the background. Background Tasks with Live Activities (R-03) are not wired yet.
+- Quad remesh leaves a few dozen folded quad pairs on sharp crease strokes narrower than one quad (47 at 20k on the test head; none on smooth forms). The aggressive-SAT flip repair is compiled out because it needs an external solver.
 - The baker's tangent frame is per triangle, not MikkTSpace, so normal maps can show faint seams in engines that expect MikkTSpace.
 - UV packing is shelf-based on chart bounding boxes: about 35% of a tile is covered on organic shapes. Better packing is P1 (U-04).
 - The deflate encoder uses fixed Huffman codes only, so files are larger than zlib's level 6 output. They are valid and readable everywhere.
 
 ### Next, in dependency order
 
-1. **Quad remesh**: field-aligned quad remesher (Instant Meshes-style orientation and position fields, or QuadriFlow vendored with a Boost-free max-flow), behind `IRemesher`, then guide strokes that bias the cross-field (R-01, R-02, R-04).
-2. **Manual retopology** core operations (T-01 to T-03, T-06), then the reference asset plus the acceptance chain in CI with timings per commit.
+1. **Guide strokes** that constrain the quad remesher's orientation field (R-02), and reprojecting multires detail onto a remeshed base (R-04, T-06).
+2. **Manual retopology** core operations (T-01 to T-03), then the reference asset plus the acceptance chain in CI with timings per commit.
 3. MikkTSpace tangents, curvature and cavity bakes, better chart packing, seam painting (U-02).
 4. Tangent-space multires detail and sparse on-disk levels, dyntopo (S-03), Metal compute paths for remesh and bake (K-03).
 

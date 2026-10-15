@@ -130,6 +130,16 @@ Result<VoxelRemeshStats> Document::voxel_remesh(const VoxelRemeshOptions& option
     return stats;
 }
 
+Result<QuadRemeshStats> Document::quad_remesh(const QuadRemeshOptions& options) {
+    commit_level();
+    QuadRemeshStats stats;
+    // Remesh the most detailed level so fine forms guide the field.
+    auto result = cruth::quad_remesh(multires_.level(multires_.top()), options, &stats);
+    if (!result) return result.error();
+    set_mesh(std::move(result).value(), "Quad remesh");
+    return stats;
+}
+
 DecimateStats Document::decimate(std::size_t target_triangles) {
     commit_level();
     DecimateOptions options;

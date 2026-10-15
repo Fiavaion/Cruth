@@ -25,6 +25,7 @@ if(CRUTH_SANITIZE AND NOT MSVC)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
+add_subdirectory(third_party)
 add_subdirectory(core)
 
 if(CRUTH_BUILD_CLI)

@@ -123,6 +123,11 @@ struct ContentView: View {
                     Button("\(resolution) voxels") { session.voxelRemesh(resolution: Int32(resolution)) }
                 }
             }
+            Menu("Quad Remesh", systemImage: "squareshape.split.2x2") {
+                ForEach([2000, 5000, 10000, 20000], id: \.self) { faces in
+                    Button("\(faces.formatted()) quads") { session.quadRemesh(faces: UInt64(faces)) }
+                }
+            }
             Menu("Decimate", systemImage: "triangle") {
                 Button("Keep 50%") { session.decimate(keeping: 0.5) }
                 Button("Keep 25%") { session.decimate(keeping: 0.25) }

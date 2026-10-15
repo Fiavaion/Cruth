@@ -12,6 +12,7 @@ add_library(cruth_core STATIC
   src/multires.cpp
   src/primitives.cpp
   src/print_check.cpp
+  src/quad_remesh.cpp
   src/raycast.cpp
   src/sculpt.cpp
   src/subdivide.cpp
@@ -26,4 +27,4 @@ target_include_directories(cruth_core PUBLIC
 target_compile_features(cruth_core PUBLIC cxx_std_20)
 set_target_properties(cruth_core PROPERTIES CXX_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
 find_package(Threads REQUIRED)
-target_link_libraries(cruth_core PUBLIC Threads::Threads PRIVATE cruth_warnings)
+target_link_libraries(cruth_core PUBLIC Threads::Threads PRIVATE cruth_warnings cruth_quadriflow)

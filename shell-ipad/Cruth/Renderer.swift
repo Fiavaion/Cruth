@@ -63,7 +63,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     func draw(in view: MTKView) {
-        guard let document = session.document else { return }
+        // A background command may be rewriting the mesh; keep the last frame.
+        guard let document = session.document, !session.isBusy else { return }
         if framedGeneration != session.documentGeneration {
             framedGeneration = session.documentGeneration
             let b = session.bounds()
