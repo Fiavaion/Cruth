@@ -40,6 +40,12 @@ targets:
       Debug: Signing.xcconfig
       Release: Signing.xcconfig
     settings:
+      configs:
+        # The C++ core is the only C-family code in the app. Unoptimised, quad
+        # remesh takes over a minute in a Debug build, so optimise it even in
+        # Debug; Swift stays unoptimised for debugging.
+        Debug:
+          GCC_OPTIMIZATION_LEVEL: "2"
       base:
         PRODUCT_NAME: Cruth
         PRODUCT_BUNDLE_IDENTIFIER: $(CRUTH_BUNDLE_ID)
