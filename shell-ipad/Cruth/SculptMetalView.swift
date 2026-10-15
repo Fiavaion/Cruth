@@ -60,7 +60,7 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
                                                 (retopoLayer, UIColor.systemTeal, 1.5, false),
                                                 (pathLayer, UIColor.systemYellow, 2.0, false)] {
             overlay.fillColor = UIColor.clear.cgColor
-            overlay.strokeColor = color.withAlphaComponent(hidden ? 0.35 : 0.9).cgColor
+            overlay.strokeColor = color.withAlphaComponent(hidden ? 0.55 : 0.9).cgColor
             overlay.lineWidth = CGFloat(width)
             overlay.lineJoin = .round
             overlay.lineCap = hidden ? .butt : .round
@@ -89,7 +89,9 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     /// Projects guides and the retopology cage into the view, splitting each
     /// polyline into the parts in front of the model and the parts behind it.
     func refreshOverlay() {
-        guard let renderer else { return }
+        // While a background command owns the document, raycasts fail and the
+        // viewport keeps its last frame, so keep the overlay that matches it.
+        guard let renderer, !session.isBusy else { return }
         let camera = renderer.camera
         let size = bounds.size
         var tested: [SIMD3<Float>: Bool] = [:]  // cage edges share endpoints
@@ -312,7 +314,9 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
             finishStroke()
             return
         }
-        guard strokeTouch == nil, let touch = touches.first(where: sculpts) else { return }
+        // Only the primary mouse button sculpts; fingers and Pencil carry no buttons.
+        guard strokeTouch == nil, (event?.buttonMask ?? []).subtracting(.primary).isEmpty,
+              let touch = touches.first(where: sculpts) else { return }
         strokeTouch = touch
         grabPlane = nil
         pathPoints.removeAll()
