@@ -114,6 +114,7 @@ struct Chart {
     int tile = 0;
     Vec2 size;                    // bounding box after rotation (world units)
     Vec2 offset;                  // placement in the tile (world units)
+    bool turned = false;          // packed with a quarter turn, not yet applied to uv/size
 };
 
 std::vector<Chart> grow_charts(const Mesh& mesh, const UnwrapOptions& o) {
@@ -350,11 +351,14 @@ void normalise_chart(const Mesh& mesh, Chart& chart) {
     const float s = area2d > 0 ? float(std::sqrt(area3d / area2d)) : 1.0f;
     for (auto& p : chart.uv) p = p * s;
 
+    // Rotating calipers: the tightest box has a side flush with a hull edge.
     const std::vector<Vec2> hull = convex_hull(chart.uv);
     float best_area = 3.4e38f, best_angle = 0;
-    for (int step = 0; step < 45; ++step) {
-        const float a = float(step) * std::numbers::pi_v<float> / 90.0f;  // 0..88 degrees
-        const float c = std::cos(a), sn = std::sin(a);
+    for (std::size_t i = 0; i < hull.size() && hull.size() >= 3; ++i) {
+        const Vec2 e = hull[(i + 1) % hull.size()] - hull[i];
+        const float len = std::sqrt(e.x * e.x + e.y * e.y);
+        if (len <= 0) continue;
+        const float c = e.x / len, sn = -e.y / len;  // rotates the edge onto +x
         float x0 = 3.4e38f, x1 = -3.4e38f, y0 = 3.4e38f, y1 = -3.4e38f;
         for (Vec2 p : hull) {
             const float x = c * p.x - sn * p.y, y = sn * p.x + c * p.y;
@@ -363,9 +367,9 @@ void normalise_chart(const Mesh& mesh, Chart& chart) {
             y0 = std::min(y0, y);
             y1 = std::max(y1, y);
         }
-        if ((x1 - x0) * (y1 - y0) < best_area) {
+        if ((x1 - x0) * (y1 - y0) < best_area * 0.99999f) {
             best_area = (x1 - x0) * (y1 - y0);
-            best_angle = a;
+            best_angle = std::atan2(sn, c);
         }
     }
     const float c = std::cos(best_angle), sn = std::sin(best_angle);
@@ -386,31 +390,244 @@ void normalise_chart(const Mesh& mesh, Chart& chart) {
     }
     for (auto& p : chart.uv) p = p - lo;
     chart.size = hi - lo;
+    // Non-finite input positions: collapse the chart to a point so packing
+    // stays bounded and the UVs stay finite. min/max skip NaN, so check the
+    // points as well as the box.
+    const bool finite = std::all_of(chart.uv.begin(), chart.uv.end(),
+                                    [](const Vec2& p) { return std::isfinite(p.x) && std::isfinite(p.y); });
+    if (!finite || !std::isfinite(chart.size.x) || !std::isfinite(chart.size.y)) {
+        for (auto& p : chart.uv) p = {};
+        chart.size = {};
+    }
 }
 
-// Shelf packing of the charts in one tile. Returns the square side used.
-float pack_tile(std::vector<Chart*>& charts, float pad) {
-    std::sort(charts.begin(), charts.end(), [](const Chart* a, const Chart* b) { return a->size.y > b->size.y; });
-    double area = 0;
-    float widest = 0;
-    for (const Chart* c : charts) {
-        area += double(c->size.x + pad) * double(c->size.y + pad);
-        widest = std::max(widest, c->size.x + pad);
-    }
-    const float width = std::max(widest, float(std::sqrt(area) * 1.08));
-    float x = 0, y = 0, shelf = 0, used_w = 0;
+// MaxRects packing (best short side fit). A tile is a square of side `side`;
+// every chart takes a (size + pad) cell and may turn 90 degrees. Deterministic:
+// ties resolve by list order, and no hash container is iterated.
+struct FreeRect {
+    float x, y, w, h;
+};
+
+bool contains(const FreeRect& a, const FreeRect& b) {
+    return b.x >= a.x && b.y >= a.y && b.x + b.w <= a.x + a.w && b.y + b.h <= a.y + a.h;
+}
+
+// Charts are already sorted; returns false when one does not fit.
+bool pack_tile_maxrects(const std::vector<Chart*>& charts, float side, float pad) {
+    const float eps = side * 1e-6f;
+    std::vector<FreeRect> free_rects{{0, 0, side, side}};
+    std::vector<FreeRect> next;
+    std::vector<char> split;  // parallel to next: 1 for pieces cut by this placement
     for (Chart* c : charts) {
-        if (x > 0 && x + c->size.x + pad > width) {
-            y += shelf;
-            x = 0;
-            shelf = 0;
+        const float w = c->size.x + pad, h = c->size.y + pad;
+        float best_short = 3.4e38f, best_long = 3.4e38f;
+        std::size_t best = free_rects.size();
+        bool best_turn = false;
+        for (std::size_t i = 0; i < free_rects.size(); ++i) {
+            const FreeRect& r = free_rects[i];
+            for (int turn = 0; turn < 2; ++turn) {
+                const float cw = turn ? h : w, ch = turn ? w : h;
+                if (cw > r.w + eps || ch > r.h + eps) continue;
+                const float lo = std::min(r.w - cw, r.h - ch), hi = std::max(r.w - cw, r.h - ch);
+                if (lo < best_short || (lo == best_short && hi < best_long)) {
+                    best_short = lo;
+                    best_long = hi;
+                    best = i;
+                    best_turn = turn != 0;
+                }
+            }
         }
-        c->offset = {x + pad * 0.5f, y + pad * 0.5f};
-        x += c->size.x + pad;
-        used_w = std::max(used_w, x);
-        shelf = std::max(shelf, c->size.y + pad);
+        if (best == free_rects.size()) return false;
+        c->turned = best_turn;  // applied by apply_turns once the layout is final
+        const FreeRect placed{free_rects[best].x, free_rects[best].y, best_turn ? h : w, best_turn ? w : h};
+        c->offset = {placed.x + pad * 0.5f, placed.y + pad * 0.5f};
+
+        next.clear();
+        split.clear();
+        for (const FreeRect& r : free_rects) {
+            if (placed.x >= r.x + r.w || placed.x + placed.w <= r.x || placed.y >= r.y + r.h ||
+                placed.y + placed.h <= r.y) {
+                next.push_back(r);
+                split.push_back(0);
+                continue;
+            }
+            auto add = [&](const FreeRect& n) {
+                next.push_back(n);
+                split.push_back(1);
+            };
+            if (placed.x > r.x) add({r.x, r.y, placed.x - r.x, r.h});
+            if (placed.x + placed.w < r.x + r.w) add({placed.x + placed.w, r.y, r.x + r.w - placed.x - placed.w, r.h});
+            if (placed.y > r.y) add({r.x, r.y, r.w, placed.y - r.y});
+            if (placed.y + placed.h < r.y + r.h) add({r.x, placed.y + placed.h, r.w, r.y + r.h - placed.y - placed.h});
+        }
+        // Untouched rects were maximal before and lie outside the parents of
+        // the new pieces, so only new pieces can be redundant: O(new * F)
+        // rather than all pairs. Equal rects keep the untouched one, else the first.
+        free_rects.clear();
+        for (std::size_t i = 0; i < next.size(); ++i) {
+            bool redundant = false;
+            for (std::size_t j = 0; split[i] && j < next.size() && !redundant; ++j) {
+                redundant = i != j && contains(next[j], next[i]) &&
+                            (!split[j] || j < i || !contains(next[i], next[j]));
+            }
+            if (!redundant) free_rects.push_back(next[i]);
+        }
     }
-    return std::max(used_w, y + shelf);
+    return true;
+}
+
+// Skyline bottom-left packing for many charts: each placement costs O(S)
+// over the skyline segments instead of MaxRects' growing free list, for 1-2
+// points of efficiency. Same contract as pack_tile_maxrects.
+struct SkySegment {
+    float x, y, w;
+};
+
+bool pack_tile_skyline(const std::vector<Chart*>& charts, float side, float pad) {
+    const float eps = side * 1e-6f;
+    std::vector<SkySegment> sky{{0, 0, side}};
+    std::vector<SkySegment> next;
+    for (Chart* c : charts) {
+        const float w = c->size.x + pad, h = c->size.y + pad;
+        float best_top = 3.4e38f, best_y = 0;
+        std::size_t best = sky.size();
+        bool best_turn = false;
+        for (std::size_t i = 0; i < sky.size(); ++i) {
+            for (int turn = 0; turn < 2; ++turn) {
+                const float cw = turn ? h : w, ch = turn ? w : h;
+                const float x = sky[i].x;
+                if (x + cw > side + eps) continue;
+                float y = sky[i].y;
+                for (std::size_t j = i + 1; j < sky.size() && sky[j].x < x + cw - eps; ++j) y = std::max(y, sky[j].y);
+                if (y + ch > side + eps) continue;
+                if (y + ch < best_top) {  // lowest top; ties keep the leftmost, unturned
+                    best_top = y + ch;
+                    best_y = y;
+                    best = i;
+                    best_turn = turn != 0;
+                }
+            }
+        }
+        if (best == sky.size()) return false;
+        c->turned = best_turn;
+        const float x = sky[best].x, cw = best_turn ? h : w, ch = best_turn ? w : h;
+        c->offset = {x + pad * 0.5f, best_y + pad * 0.5f};
+
+        // Rebuild: the parts left of the cell, the cell's top, the parts right of it.
+        next.clear();
+        for (const SkySegment& s : sky) {
+            if (s.x < x) next.push_back({s.x, s.y, std::min(s.w, x - s.x)});
+        }
+        next.push_back({x, best_y + ch, cw});
+        for (const SkySegment& s : sky) {
+            const float start = std::max(s.x, x + cw);
+            if (s.x + s.w > start) next.push_back({start, s.y, s.x + s.w - start});
+        }
+        sky.clear();
+        for (const SkySegment& s : next) {
+            if (s.w <= 0) continue;
+            if (!sky.empty() && sky.back().y == s.y) sky.back().w = s.x + s.w - sky.back().x;
+            else sky.push_back(s);
+        }
+        if (sky.empty()) sky.push_back({0, best_top, side});  // side 0: only empty cells fit
+    }
+    return true;
+}
+
+// Applies the quarter turns the packer chose. Counter-clockwise keeps the winding.
+void apply_turns(std::vector<Chart>& charts) {
+    for (Chart& c : charts) {
+        if (!c.turned) continue;
+        for (auto& p : c.uv) p = {c.size.y - p.y, p.x};
+        c.size = {c.size.y, c.size.x};
+        c.turned = false;
+    }
+}
+
+// Above this many charts in a tile MaxRects' free list makes the square
+// search slow (0.6-0.85 s per unwrap at 1,500-1,700 charts against 20-70 ms
+// for the skyline, for 1-2 points of efficiency), so the skyline takes over.
+constexpr std::size_t kMaxRectsChartLimit = 500;
+
+using TilePacker = bool (*)(const std::vector<Chart*>&, float side, float pad);
+
+bool pack_all(const std::vector<std::vector<Chart*>>& tiles, float side, float pad, TilePacker pack) {
+    for (const auto& t : tiles) {
+        if (!pack(t, side, pad)) return false;
+    }
+    return true;
+}
+
+// Smallest square (to ~0.3%) that holds every tile's charts at padding `pad`
+// for the current chart order.
+float fit_square(const std::vector<std::vector<Chart*>>& tiles, float pad, TilePacker pack) {
+    double most_area = 0;
+    float longest = 0;
+    for (const auto& t : tiles) {
+        double a = 0;
+        for (const Chart* c : t) {
+            a += double(c->size.x + pad) * double(c->size.y + pad);
+            // A cell's long side must fit whichever way it turns.
+            longest = std::max(longest, std::max(c->size.x, c->size.y) + pad);
+        }
+        most_area = std::max(most_area, a);
+    }
+    float lo = std::max(longest, float(std::sqrt(most_area)));  // cannot be smaller
+    if (lo <= 0 && pack_all(tiles, 0.0f, pad, pack)) return 0.0f;      // only empty cells
+    float hi = std::max(lo, 1e-20f);
+    // Bounded: once hi >= 2 * n * longest, some empty full-height strip at
+    // least `longest` wide survives every placement (n cells cover at most
+    // n * longest of the x axis, in at most n + 1 gaps), so every cell fits.
+    // 24 steps of 4% then doubling reach that for any chart count.
+    for (int step = 0; step < 200 && !pack_all(tiles, hi, pad, pack); ++step) {
+        lo = hi;
+        hi *= step < 24 ? 1.04f : 2.0f;
+    }
+    for (int i = 0; i < 12 && hi - lo > hi * 0.003f; ++i) {
+        const float mid = 0.5f * (lo + hi);
+        (pack_all(tiles, mid, pad, pack) ? hi : lo) = mid;
+    }
+    return hi;
+}
+
+void sort_tiles(std::vector<std::vector<Chart*>>& tiles, float (*key)(const Chart&)) {
+    for (auto& t : tiles) {
+        std::sort(t.begin(), t.end(), [key](const Chart* a, const Chart* b) {
+            const float ka = key(*a), kb = key(*b);
+            return ka != kb ? ka > kb : a < b;  // pointers into one vector: stable tie-break
+        });
+    }
+}
+
+using OrderKey = float (*)(const Chart&);
+constexpr OrderKey kOrderKeys[] = {
+    [](const Chart& c) { return std::max(c.size.x, c.size.y); },
+    [](const Chart& c) { return c.size.x * c.size.y; },
+    [](const Chart& c) { return c.size.x + c.size.y; },
+};
+
+// Packs with insertion order `key`, or when `key` is negative tries every
+// order, keeps the tightest (ties keep the earlier) and stores it in `key`.
+// Leaves the charts placed at the returned size.
+float pack_tiles(std::vector<std::vector<Chart*>>& tiles, float pad, TilePacker pack, int& key) {
+    float side = 3.4e38f;
+    if (key < 0) {
+        key = 0;
+        for (int k = 0; k < int(std::size(kOrderKeys)); ++k) {
+            sort_tiles(tiles, kOrderKeys[k]);
+            const float fitted = fit_square(tiles, pad, pack);
+            if (fitted < side * 0.9999f) {
+                side = fitted;
+                key = k;
+            }
+        }
+        sort_tiles(tiles, kOrderKeys[key]);
+    } else {
+        sort_tiles(tiles, kOrderKeys[key]);
+        side = fit_square(tiles, pad, pack);
+    }
+    pack_all(tiles, side, pad, pack);  // the last probe may have failed or used another order
+    return side;
 }
 
 }  // namespace
@@ -438,7 +655,10 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options, Unwrap
     std::vector<Chart*> order;
     for (auto& c : charts) order.push_back(&c);
     std::sort(order.begin(), order.end(),
-              [](const Chart* a, const Chart* b) { return a->size.x * a->size.y > b->size.x * b->size.y; });
+              [](const Chart* a, const Chart* b) {
+                  const float aa = a->size.x * a->size.y, ab = b->size.x * b->size.y;
+                  return aa != ab ? aa > ab : a < b;  // pointers into one vector: stable tie-break
+              });
     std::vector<double> tile_area(tiles, 0.0);
     std::vector<std::vector<Chart*>> per_tile(tiles);
     for (Chart* c : order) {
@@ -448,13 +668,26 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options, Unwrap
         per_tile[t].push_back(c);
     }
 
-    // Padding is in texels, so it depends on the final scale: iterate.
-    float side = 0;
-    for (int pass = 0; pass < 3; ++pass) {
-        const float pad = pass == 0 ? 0.0f : float(options.padding_texels) * side / float(resolution) * 2.0f;
-        side = 0;
-        for (auto& tile : per_tile) side = std::max(side, pack_tile(tile, pad));
+    // Padding is in texels, so it depends on the final scale: iterate until
+    // the gap (2 * padding_texels, as before) holds at the size we ended up with.
+    // The zero-padding pass only estimates the scale, so it packs in one
+    // order. Padded passes try every order: padding changes the cells'
+    // proportions, and fixing the order early cost up to 1% efficiency.
+    std::size_t most_charts = 0;
+    for (const auto& t : per_tile) most_charts = std::max(most_charts, t.size());
+    const TilePacker packer = most_charts > kMaxRectsChartLimit ? pack_tile_skyline : pack_tile_maxrects;
+    int key = 0;
+    float side = pack_tiles(per_tile, 0.0f, packer, key);
+    float pad = 0;
+    bool padding_met = false;
+    for (int pass = 0; pass < 6 && !padding_met; ++pass) {
+        const float pad_fraction = std::max(0.0f, float(options.padding_texels)) * 2.0f / float(resolution);
+        pad = pad_fraction * side * (pass < 5 ? 1.02f : 1.1f);
+        key = -1;
+        side = pack_tiles(per_tile, pad, packer, key);
+        padding_met = pad >= pad_fraction * side;
     }
+    apply_turns(charts);
     const float scale = side > 0 ? 1.0f / side : 1.0f;  // uv units per world unit, shared by all tiles
 
     UVSet out;
@@ -486,12 +719,15 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options, Unwrap
             for (Index f : c.faces) used += mesh.face_area(f);
         }
         stats->utilisation = float(used * scale * scale / tiles);
+        stats->tile_utilisation = uv_tile_utilisation(mesh, out);
         const auto distortion = uv_area_distortion(mesh, out);
         float worst = 1;
         for (float d : distortion) {
             if (d > 0) worst = std::max(worst, std::max(d, 1.0f / d));
         }
         stats->max_stretch = worst;
+        stats->padding_texels = 0.5f * pad * scale * float(resolution);  // pad is the gap between two charts
+        stats->padding_met = padding_met;
     }
     return out;
 }
@@ -552,6 +788,21 @@ std::vector<float> uv_area_distortion(const Mesh& mesh, const UVSet& uv) {
         ratio[f] = a3[f] > 0 ? float(a2[f] / a3[f] * norm) : 0.0f;
     }
     return ratio;
+}
+
+std::vector<float> uv_tile_utilisation(const Mesh& mesh, const UVSet& uv) {
+    std::vector<double> area(std::size_t(std::max(uv.tiles, 1)), 0.0);
+    if (!uv.matches(mesh)) return {area.begin(), area.end()};
+    for (std::size_t f = 0; f < mesh.face_count(); ++f) {
+        double a = 0;
+        for (std::size_t i = 1; i + 1 < mesh.face_size(f); ++i) {
+            a += 0.5 * std::abs(cross(uv.corner(mesh, f, i) - uv.corner(mesh, f, 0),
+                                      uv.corner(mesh, f, i + 1) - uv.corner(mesh, f, 0)));
+        }
+        const auto tile = std::size_t(std::clamp(int(std::floor(uv.corner(mesh, f, 0).x)), 0, int(area.size()) - 1));
+        area[tile] += a;
+    }
+    return {area.begin(), area.end()};
 }
 
 std::size_t count_flipped_uv_faces(const Mesh& mesh, const UVSet& uv) {
