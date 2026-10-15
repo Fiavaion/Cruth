@@ -76,7 +76,7 @@ To debug the core, use the Run and Debug panel: **Core: unit tests**, **Core: ac
 
 This picks the first available iPad simulator. To choose another, set `CRUTH_SIMULATOR="iPad Pro 13-inch (M5)"` (list them with `xcrun simctl list devices available`). With finger sculpting on, a finger on the model sculpts and a finger on the background orbits; a mouse or trackpad acts the same way in the simulator. Turn on **Finger Sculpting** in the brush panel. The **Draw with Finger** toggle in the Guides and Retopo panels does the same for guide strokes and retopology tools. The Pencil-only features (pressure, hover, squeeze) need a real iPad.
 
-To run the 16-test XCUITest smoke suite in the simulator:
+To run the 18-test XCUITest smoke suite in the simulator:
 
 ```sh
 ./scripts/ipad.sh test

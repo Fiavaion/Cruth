@@ -31,7 +31,7 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 cmake --preset asan && cmake --build --preset asan && ctest --preset asan              # before committing core changes
 ./scripts/ipad.sh build        # iPad app for the simulator (macOS + Xcode 26 only)
 ./scripts/ipad.sh run          # build, wait for the simulator to boot, launch, stream logs
-./scripts/ipad.sh test         # 16-test XCUITest smoke suite in the simulator
+./scripts/ipad.sh test         # 18-test XCUITest smoke suite in the simulator
 ```
 
 - Run tests in **Release**. Debug and ASan are very slow on quad remesh (Eigen unoptimised): the CLI chain takes about 40 minutes under ASan. The debug and asan test presets skip the acceptance label for that reason.
@@ -58,7 +58,7 @@ cmake --preset asan && cmake --build --preset asan && ctest --preset asan       
 
 Phase 0 (headless core) has met its exit gate locally. See ROADMAP for measurements and known issues. The iPad shell builds and runs on a Mac (Xcode 26.6, iPad Pro 13-inch M5 simulator, iOS 26.5), and the core passes ctest on macOS/arm64. Things to know:
 - The Metal toolchain must be downloaded once (`xcodebuild -downloadComponent MetalToolchain`) before `Shaders.metal` compiles.
-- `./scripts/ipad.sh test` runs a 16-test XCUITest smoke suite. `ipad.sh run` waits for the simulator to boot.
+- `./scripts/ipad.sh test` runs a 18-test XCUITest smoke suite. `ipad.sh run` waits for the simulator to boot.
 - Device signing has been tested through `shell-ipad/Signing.local.xcconfig`.
 - Keep Swift 5 mode with default concurrency checking. Don't enable "Default Actor Isolation = MainActor" or strict concurrency without fixing `Renderer` (MTKViewDelegate) and `SculptSession` background closures.
 - GCC has not been run on this Mac.

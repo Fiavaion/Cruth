@@ -37,7 +37,7 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 - [x] Finger sculpting: a finger on the model sculpts, a finger on the background still orbits; a mouse or trackpad sculpts the same way (I-01)
 - [x] "Draw with Finger" toggle in the Guides and Retopo panels
 - [x] Guide and cage overlays are occluded by the model, with a faint dashed pass for the hidden parts
-- [x] XCUITest smoke suite (16 tests) behind `./scripts/ipad.sh test`
+- [x] XCUITest smoke suite (18 tests) behind `./scripts/ipad.sh test`
 - [x] C++ core optimised in iPad Debug builds: the quad remesh UI test drops from 73 s to 14 s
 - [x] MikkTSpace tangents for tangent-space normal bakes, with the exact inverse on encode; VDM uses an orthonormal unit-frame TBN; both decode rules are documented in `bake.hpp` (K-01, K-02)
 - [x] Game-asset OBJ export is fan-triangulated with `vn`, so it matches the bake
@@ -80,7 +80,6 @@ PRD target: 512³ in ≤ 1 s on M4 and ≤ 3 s on A14, through the Metal compute
 - The plain CLI `unwrap` output OBJ is still quads with no `vn`.
 - Quad-pen dots ignore occlusion.
 - A two-finger undo tap during finger drawing can add a tiny guide or contour first.
-- `xcodebuild` warns that the core and quadriflow source folders belong to two groups (cosmetic).
 - GCC has not been run on this Mac; only Clang is checked locally.
 - Face rings on quad-remesh output are helical: a ring started anywhere tends to wind over the whole mesh, so Insert Loop on raw remesh output roughly triples the face count. Guide strokes align the field but do not close the loops around a feature; Loop Around now closes a loop by hand, but the remesher does not. The acceptance chain therefore uses a snapped relax for its hand-retopology step, and the PRD's "retopo the eye loops by hand" waits on loop-closing in the remesher, or on a bounded loop cut between poles (Loop Around covers the closed-loop case by hand).
 - The acceptance reference sculpt is about 3M triangles, not the PRD's 5M: one more multires level would be 12M.
