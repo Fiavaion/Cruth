@@ -53,9 +53,29 @@ enum WorkMode: String, CaseIterable, Identifiable {
 }
 
 enum RetopoTool: String, CaseIterable, Identifiable {
-    case contour, strip
+    case contour, strip, quadPen, slideLoop, insertLoop, loopAround
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .contour: return "Contour"
+        case .strip: return "Strip"
+        case .quadPen: return "Quad Pen"
+        case .slideLoop: return "Slide Loop"
+        case .insertLoop: return "Insert Loop"
+        case .loopAround: return "Loop Around"
+        }
+    }
+
+    /// How a touch drives the tool: a stroke on the surface, a tap, or a drag.
+    enum Input { case stroke, tap, drag }
+
+    var input: Input {
+        switch self {
+        case .contour, .strip, .loopAround: return .stroke
+        case .quadPen, .insertLoop: return .tap
+        case .slideLoop: return .drag
+        }
+    }
 }
 
 enum MeshFileFormat: String, CaseIterable, Identifiable {
@@ -107,13 +127,22 @@ final class SculptSession: ObservableObject {
     @Published private(set) var mode: WorkMode = .sculpt
     @Published private(set) var guideStrokes: [[SIMD3<Float>]] = []
     @Published var keepDetail = true
-    @Published var retopoTool: RetopoTool = .contour
+    @Published var retopoTool: RetopoTool = .contour {
+        didSet { if oldValue == .quadPen, retopoTool != .quadPen { liftQuadPen() } }
+    }
     @Published var loopVertices = 12
     @Published var stripWidth: Float = 0.1
     @Published var stripSegments = 6
     @Published private(set) var retopoStats = CruthRetopoStats()
     @Published private(set) var retopoEdges: [SIMD3<Float>] = []  // pairs of edge endpoints
+    @Published private(set) var retopoCanUndo = false
+    @Published private(set) var retopoCanRedo = false
+    @Published private(set) var quadPenPending: [SIMD3<Float>] = []
     private var retopo: OpaquePointer?
+
+    /// Undo and redo act on the cage while a retopology is open, else on the document.
+    var undoAvailable: Bool { retopo != nil ? retopoCanUndo : canUndo }
+    var redoAvailable: Bool { retopo != nil ? retopoCanRedo : canRedo }
 
     /// Bumped when a new mesh replaces the old one, so the viewport can re-frame.
     @Published private(set) var documentGeneration = 0
@@ -168,11 +197,83 @@ final class SculptSession: ObservableObject {
                 case .strip:
                     return cruth_retopo_add_strip(retopo, buffer.baseAddress, UInt32(buffer.count),
                                                   stripWidth, Int32(stripSegments))
+                case .loopAround:
+                    var loop: UInt32 = 0
+                    let status = cruth_retopo_insert_loop_around(retopo, buffer.baseAddress, UInt32(buffer.count), &loop)
+                    if status == CRUTH_OK { flash("Loop of \(loop) vertices added") }
+                    return status
+                case .quadPen, .slideLoop, .insertLoop:
+                    return CRUTH_OK  // tap and drag tools take no strokes
                 }
             }
-            if status != CRUTH_OK { report(status) }
+            if status != CRUTH_OK {
+                if retopoTool == .loopAround { flash(status) } else { report(status) }
+            }
             refreshRetopo()
         }
+    }
+
+    /// Quad pen (PRD T-02): one tap on the surface. The 4th tap makes a quad,
+    /// then every 2 more chain the next one.
+    func quadPenTap(at point: SIMD3<Float>) {
+        guard let retopo, !isBusy else { return }
+        var result = CruthQuadPenResult()
+        let status = cruth_retopo_quad_pen_tap(retopo, CruthVec3(x: point.x, y: point.y, z: point.z), &result)
+        if status != CRUTH_OK { flash(status) }
+        refreshRetopo()
+    }
+
+    /// Ends the quad-pen chain, so the next tap starts a new quad.
+    func liftQuadPen() {
+        guard let retopo else { return }
+        cruth_retopo_quad_pen_lift(retopo)
+        refreshRetopo()
+    }
+
+    /// Picks the cage edge nearest to point and starts sliding its loop. Returns
+    /// the slide axis (how far t = 1 moves the edge), or nil when nothing slides.
+    func beginSlideLoop(near point: SIMD3<Float>) -> SIMD3<Float>? {
+        guard let retopo, !isBusy, let edge = nearestEdge(to: point) else { return nil }
+        var axis = CruthVec3()
+        let status = cruth_retopo_slide_loop_begin(retopo, edge.a, edge.b, &axis)
+        guard status == CRUTH_OK else {
+            flash(status)
+            return nil
+        }
+        refreshRetopo()
+        return SIMD3(axis.x, axis.y, axis.z)
+    }
+
+    /// t is absolute from where the loop was at begin; the core clamps it.
+    func updateSlideLoop(_ t: Float) {
+        guard let retopo else { return }
+        cruth_retopo_slide_loop_update(retopo, t)
+        refreshRetopo()
+    }
+
+    func endSlideLoop() {
+        guard let retopo else { return }
+        cruth_retopo_slide_loop_end(retopo)
+        refreshRetopo()
+    }
+
+    /// Cuts a new loop halfway across the quad ring through the edge nearest to point.
+    func insertLoop(near point: SIMD3<Float>) {
+        guard let retopo, !isBusy, let edge = nearestEdge(to: point) else { return }
+        var loop: UInt32 = 0
+        let status = cruth_retopo_insert_loop(retopo, edge.a, edge.b, 0.5, &loop)
+        if status == CRUTH_OK { flash("Loop of \(loop) vertices added") } else { flash(status) }
+        refreshRetopo()
+    }
+
+    private func nearestEdge(to point: SIMD3<Float>) -> (a: UInt32, b: UInt32)? {
+        guard let retopo else { return nil }
+        var a: UInt32 = 0, b: UInt32 = 0
+        guard cruth_retopo_nearest_edge(retopo, CruthVec3(x: point.x, y: point.y, z: point.z), &a, &b) else {
+            flash("Draw some of the cage first.")
+            return nil
+        }
+        return (a, b)
     }
 
     func clearGuides() {
@@ -192,6 +293,7 @@ final class SculptSession: ObservableObject {
             message = "Draw contours or strips first."
             return
         }
+        liftQuadPen()
         let levels: Int32 = keepDetail ? 2 : 0
         runInBackground("Applying retopology…", done: "Retopology applied") { doc in
             cruth_retopo_apply(retopo, doc, levels)
@@ -206,12 +308,23 @@ final class SculptSession: ObservableObject {
         retopo = nil
         retopoEdges = []
         retopoStats = CruthRetopoStats()
+        retopoCanUndo = false
+        retopoCanRedo = false
+        quadPenPending = []
         if mode == .retopo { mode = .sculpt }
     }
 
     private func refreshRetopo() {
         guard let retopo else { return }
         retopoStats = cruth_retopo_stats(retopo)
+        retopoCanUndo = cruth_retopo_can_undo(retopo)
+        retopoCanRedo = cruth_retopo_can_redo(retopo)
+        let pending = cruth_retopo_quad_pen_pending(retopo, nil, 0)
+        var corners = [CruthVec3](repeating: CruthVec3(), count: pending)
+        corners.withUnsafeMutableBufferPointer { buffer in
+            _ = cruth_retopo_quad_pen_pending(retopo, buffer.baseAddress, buffer.count)
+        }
+        quadPenPending = corners.map { SIMD3($0.x, $0.y, $0.z) }
         let count = cruth_retopo_copy_edges(retopo, nil, 0)
         var floats = [Float](repeating: 0, count: count * 6)
         floats.withUnsafeMutableBufferPointer { buffer in
@@ -355,13 +468,25 @@ final class SculptSession: ObservableObject {
 
     // MARK: Commands
 
+    /// Steps the cage history while a retopology is open (it is separate from the
+    /// document's), otherwise the document's.
     func undo() {
-        guard let document, !isBusy, cruth_undo(document) else { return }
+        guard !isBusy else { return }
+        if let retopo {
+            if cruth_retopo_undo(retopo) { refreshRetopo() }
+            return
+        }
+        guard let document, cruth_undo(document) else { return }
         refresh()
     }
 
     func redo() {
-        guard let document, !isBusy, cruth_redo(document) else { return }
+        guard !isBusy else { return }
+        if let retopo {
+            if cruth_retopo_redo(retopo) { refreshRetopo() }
+            return
+        }
+        guard let document, cruth_redo(document) else { return }
         refresh()
     }
 
@@ -515,5 +640,18 @@ final class SculptSession: ObservableObject {
         let detail = String(cString: cruth_last_error())
         let summary = String(cString: cruth_status_string(status))
         message = detail.isEmpty ? summary.capitalized : "\(summary.capitalized): \(detail)"
+    }
+
+    /// Reports a rejected cage edit for a few seconds; the reason is usually enough.
+    private func flash(_ status: CruthStatus) {
+        let detail = String(cString: cruth_last_error())
+        flash(detail.isEmpty ? String(cString: cruth_status_string(status)).capitalized : detail)
+    }
+
+    private func flash(_ text: String) {
+        message = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            if self?.message == text { self?.message = nil }
+        }
     }
 }

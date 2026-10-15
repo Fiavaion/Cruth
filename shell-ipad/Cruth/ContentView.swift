@@ -111,11 +111,11 @@ struct ContentView: View {
             Divider().frame(height: 24)
 
             Button { session.undo() } label: { Image(systemName: "arrow.uturn.backward") }
-                .disabled(!session.canUndo)
+                .disabled(!session.undoAvailable)
                 .keyboardShortcut("z", modifiers: .command)
                 .accessibilityIdentifier("undoButton")
             Button { session.redo() } label: { Image(systemName: "arrow.uturn.forward") }
-                .disabled(!session.canRedo)
+                .disabled(!session.redoAvailable)
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .accessibilityIdentifier("redoButton")
         }
@@ -333,11 +333,7 @@ struct RetopoPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Retopology").font(.headline)
-            Picker("Tool", selection: $session.retopoTool) {
-                ForEach(RetopoTool.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("retopoToolPicker")
+            toolPicker
             switch session.retopoTool {
             case .contour:
                 Text("Stroke across a form to add an edge loop.").font(.footnote).foregroundStyle(.secondary)
@@ -349,6 +345,24 @@ struct RetopoPanel: View {
                     Slider(value: $session.stripWidth, in: 0.01...0.5)
                 }
                 Stepper("Segments: \(session.stripSegments)", value: $session.stripSegments, in: 1...64)
+            case .quadPen:
+                Text("Tap four corners for a quad; every two more taps add the next one.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                HStack {
+                    Text("\(session.quadPenPending.count) taps pending").monospacedDigit()
+                        .accessibilityIdentifier("quadPenPending")
+                    Spacer()
+                    Button("Lift") { session.liftQuadPen() }
+                        .disabled(session.quadPenPending.isEmpty)
+                        .accessibilityIdentifier("retopoLiftButton")
+                }
+            case .slideLoop:
+                Text("Drag from an edge to slide its loop.").font(.footnote).foregroundStyle(.secondary)
+            case .insertLoop:
+                Text("Tap an edge to cut a loop across it.").font(.footnote).foregroundStyle(.secondary)
+            case .loopAround:
+                Text("Draw round a feature over the cage to loop around it.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Toggle("Draw with Finger", isOn: $session.fingerSculpting)
                 .accessibilityIdentifier("fingerDrawingToggle")
@@ -373,5 +387,29 @@ struct RetopoPanel: View {
         .frame(width: 240, alignment: .leading)
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// Six tools are too wide for one segmented control, so they sit in a
+    /// two-column grid of buttons, each with a stable identifier.
+    private var toolPicker: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+            ForEach(RetopoTool.allCases) { tool in
+                let selected = session.retopoTool == tool
+                Button { session.retopoTool = tool } label: {
+                    Text(tool.title)
+                        .font(.footnote.weight(selected ? .semibold : .regular))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, minHeight: 36)
+                        .background(selected ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.12),
+                                    in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+                .accessibilityIdentifier("retopoTool.\(tool.rawValue)")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Tool")
+        .accessibilityIdentifier("retopoToolPicker")
     }
 }
