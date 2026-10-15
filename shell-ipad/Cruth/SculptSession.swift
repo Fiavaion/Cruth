@@ -653,10 +653,17 @@ final class SculptSession: ObservableObject {
         flash(detail.isEmpty ? String(cString: cruth_status_string(status)).capitalized : detail)
     }
 
+    /// Each flash gets a token, so a repeat of the same message gets its own 4 s
+    /// rather than being cleared early by the earlier one's timer.
+    private var flashToken = 0
+
     private func flash(_ text: String) {
         message = text
+        flashToken += 1
+        let token = flashToken
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-            if self?.message == text { self?.message = nil }
+            guard let self, self.flashToken == token, self.message == text else { return }
+            self.message = nil
         }
     }
 }
