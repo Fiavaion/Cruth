@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -305,5 +307,98 @@ TEST(bake_tangent_normal_uses_the_uv_frame) {
         const float expected_r = 0.5f + 0.5f * (mirror ? lean : -lean);
         CHECK_NEAR(n.at(16, 16, 0), expected_r, 0.01f);
         CHECK_NEAR(n.at(16, 16, 1), 0.5f, 0.01f);
+    }
+}
+
+// Decodes baked tangent-space normals the way an engine does (MikkTSpace pixel shader: unnormalised
+// interpolated vT and vN, vB = sign * cross(vN, vT)) and compares them with the object-space normal
+// baked from the same hits. This pins the red/green channels, the mirror sign and the corner order.
+TEST(bake_tangent_normal_decodes_to_object_normal_like_an_engine) {
+    Mesh high = make_quad_sphere(4, 1.0f);
+    for (auto& p : high.positions) {
+        // Tilts the surface along every direction on the sphere, so u and v both see slopes.
+        p = p * (1.0f + 0.06f * std::sin(5.0f * p.x + 1.0f) * std::cos(4.0f * p.y + 2.0f * p.z));
+    }
+    const Mesh low = make_quad_sphere(1, 1.0f);
+    UnwrapOptions uo;
+    uo.resolution = 128;
+    auto unwrapped = auto_unwrap(low, uo);
+    REQUIRE(unwrapped.is_ok());
+
+    for (bool mirror : {false, true}) {
+        UVSet uv = unwrapped.value();
+        if (mirror) {
+            for (Vec2& t : uv.uvs) t.x = 1.0f - t.x;
+        }
+        const BakeMap maps[] = {BakeMap::TangentNormal, BakeMap::ObjectNormal};
+        constexpr int kRes = 128;
+        auto baked = bake(low, uv, high, maps, {.resolution = kRes, .max_distance = 0.4f, .padding = 0});
+        REQUIRE(baked.is_ok());
+        auto tangents = compute_tangents(low, uv);
+        REQUIRE(tangents.is_ok());
+        const auto normals = low.vertex_normals();
+        const Image& tn_map = baked.value()[0].image;
+        const Image& obj_map = baked.value()[1].image;
+
+        // Fan triangles in the baker's order, as (vertex, uv) per corner.
+        std::size_t tri = 0;
+        std::vector<std::array<Index, 3>> tri_vertices;
+        std::vector<std::array<Vec2, 3>> tri_uv;
+        for (std::size_t f = 0; f < low.face_count(); ++f) {
+            const auto fv = low.face(f);
+            for (std::size_t i = 1; i + 1 < fv.size(); ++i, ++tri) {
+                const std::size_t c[3] = {0, i, i + 1};
+                tri_vertices.push_back({fv[c[0]], fv[c[1]], fv[c[2]]});
+                tri_uv.push_back({uv.corner(low, f, c[0]), uv.corner(low, f, c[1]), uv.corner(low, f, c[2])});
+            }
+        }
+
+        // Each corner's tangent is perpendicular to that corner's vertex normal: this pins the order
+        // of the per-corner results (decoding below is self-consistent even with shuffled corners).
+        for (std::size_t t = 0; t < tri_vertices.size(); ++t) {
+            for (std::size_t k = 0; k < 3; ++k) {
+                const Vec3& tangent = tangents.value().tangent[t * 3 + k];
+                CHECK_NEAR(length(tangent), 1.0f, 1e-3f);
+                CHECK_NEAR(dot(tangent, normalize(normals[tri_vertices[t][k]])), 0.0f, 1e-3f);
+            }
+        }
+
+        int checked = 0;
+        float worst_degrees = 0, max_red = 0, max_green = 0;
+        for (int y = 0; y < kRes; y += 2) {
+            for (int x = 0; x < kRes; x += 2) {
+                const Vec2 q{(float(x) + 0.5f) / kRes, 1.0f - (float(y) + 0.5f) / kRes};
+                for (std::size_t t = 0; t < tri_uv.size(); ++t) {
+                    const auto& u = tri_uv[t];
+                    const float area = cross(u[1] - u[0], u[2] - u[0]);
+                    if (std::abs(area) < 1e-12f) continue;
+                    const float b1 = cross(q - u[0], u[2] - u[0]) / area;
+                    const float b2 = cross(u[1] - u[0], q - u[0]) / area;
+                    const float b0 = 1 - b1 - b2;
+                    if (std::min({b0, b1, b2}) < 0.05f) continue;  // skip edges, where triangles tie
+                    const Vec3 obj{obj_map.at(x, y, 0) * 2 - 1, obj_map.at(x, y, 1) * 2 - 1, obj_map.at(x, y, 2) * 2 - 1};
+                    if (length(obj) < 0.5f) continue;  // the ray missed the high mesh
+                    const std::size_t c0 = t * 3;
+                    const auto& v = tri_vertices[t];
+                    const Vec3 vN = normals[v[0]] * b0 + normals[v[1]] * b1 + normals[v[2]] * b2;
+                    const Vec3 vT = tangents.value().tangent[c0] * b0 + tangents.value().tangent[c0 + 1] * b1 +
+                                    tangents.value().tangent[c0 + 2] * b2;
+                    const std::size_t nearest = b0 >= b1 && b0 >= b2 ? 0 : (b1 >= b2 ? 1 : 2);
+                    const Vec3 vB = cross(vN, vT) * tangents.value().sign[c0 + nearest];
+                    const Vec3 tn{tn_map.at(x, y, 0) * 2 - 1, tn_map.at(x, y, 1) * 2 - 1, tn_map.at(x, y, 2) * 2 - 1};
+                    const Vec3 decoded = normalize(vT * tn.x + vB * tn.y + vN * tn.z);
+                    const float cosine = std::clamp(dot(decoded, normalize(obj)), -1.0f, 1.0f);
+                    worst_degrees = std::max(worst_degrees, std::acos(cosine) * 180.0f / 3.14159265f);
+                    max_red = std::max(max_red, std::abs(tn.x));
+                    max_green = std::max(max_green, std::abs(tn.y));
+                    ++checked;
+                    break;
+                }
+            }
+        }
+        CHECK(checked > 300);
+        CHECK(worst_degrees < 0.5f);
+        CHECK(max_red > 0.1f);    // the test really tilts along u ...
+        CHECK(max_green > 0.1f);  // ... and along v
     }
 }

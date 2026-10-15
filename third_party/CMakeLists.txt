@@ -37,4 +37,9 @@ target_include_directories(cruth_mikktspace SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE
 set_target_properties(cruth_mikktspace PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(NOT MSVC)
   target_compile_options(cruth_mikktspace PRIVATE -w)
+  if(CRUTH_SANITIZE)
+    # The unmodified upstream shifts a 32-bit seed by 32 when its rotation is 0
+    # (mikktspace.c, QuickSort): undefined in C, harmless on every target we ship.
+    target_compile_options(cruth_mikktspace PRIVATE -fno-sanitize=shift)
+  endif()
 endif()

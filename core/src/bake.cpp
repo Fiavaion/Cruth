@@ -156,19 +156,28 @@ Result<std::vector<BakedMap>> bake(const Mesh& low, const UVSet& uv, const Mesh&
                                            low_normals[t.v[2]] * ref.b2);
                         if (length_squared(n) == 0) n = normalize(cross(P[1] - P[0], P[2] - P[0]));
 
-                        // MikkTSpace frame: interpolate the corner tangents, orthonormalise against the
-                        // interpolated normal. The mirror sign comes from the nearest corner.
+                        // MikkTSpace frame, the exact inverse of the engine-side decode: the unnormalised
+                        // interpolated tangent vT and normal vN, vB = sign * cross(vN, vT). The sign comes
+                        // from the nearest corner. A direction d maps to tangent space as
+                        // (d . row0, d . row1, d . row2) / det with row0 = vB x vN, row1 = vN x vT, row2 = vT x vB.
                         const std::size_t c0 = std::size_t(ref.triangle) * 3;
-                        Vec3 T = corner_tangents.tangent[c0] * b0 + corner_tangents.tangent[c0 + 1] * ref.b1 +
-                                 corner_tangents.tangent[c0 + 2] * ref.b2;
-                        T = T - n * dot(n, T);
-                        if (length_squared(T) < 1e-12f) {
+                        const Vec3 vN = length_squared(low_normals[t.v[0]] * b0 + low_normals[t.v[1]] * ref.b1 +
+                                                       low_normals[t.v[2]] * ref.b2) == 0
+                                            ? n
+                                            : low_normals[t.v[0]] * b0 + low_normals[t.v[1]] * ref.b1 +
+                                                  low_normals[t.v[2]] * ref.b2;
+                        Vec3 vT = corner_tangents.tangent[c0] * b0 + corner_tangents.tangent[c0 + 1] * ref.b1 +
+                                  corner_tangents.tangent[c0 + 2] * ref.b2;
+                        if (length_squared(cross(vN, vT)) < 1e-12f) {
                             // Degenerate corner tangents: any vector perpendicular to the normal.
-                            T = cross(n, std::abs(n.x) < 0.9f ? Vec3{1, 0, 0} : Vec3{0, 1, 0});
+                            vT = cross(n, std::abs(n.x) < 0.9f ? Vec3{1, 0, 0} : Vec3{0, 1, 0});
                         }
-                        T = normalize(T);
                         const std::size_t nearest = b0 >= ref.b1 && b0 >= ref.b2 ? 0 : (ref.b1 >= ref.b2 ? 1 : 2);
-                        const Vec3 B = cross(n, T) * corner_tangents.sign[c0 + nearest];
+                        const Vec3 vB = cross(vN, vT) * corner_tangents.sign[c0 + nearest];
+                        const Vec3 row0 = cross(vB, vN), row1 = cross(vN, vT), row2 = cross(vT, vB);
+                        const float det = dot(vT, row0);
+                        const float inv_det = std::abs(det) > 1e-20f ? 1.0f / det : 0.0f;
+                        auto to_tangent_space = [&](Vec3 d) { return Vec3{dot(d, row0), dot(d, row1), dot(d, row2)} * inv_det; };
 
                         // First hit from the cage inward.
                         auto hit = bvh.raycast(p + n * reach, -n, 2.0f * reach);
@@ -188,22 +197,26 @@ Result<std::vector<BakedMap>> bake(const Mesh& low, const UVSet& uv, const Mesh&
                             Image& img = images[mi];
                             float* px = &img.at(x, int(y), 0);
                             switch (maps[mi]) {
-                                case BakeMap::TangentNormal:
-                                    px[0] = dot(N, T) * 0.5f + 0.5f;
-                                    px[1] = dot(N, B) * 0.5f + 0.5f;
-                                    px[2] = dot(N, n) * 0.5f + 0.5f;
+                                case BakeMap::TangentNormal: {
+                                    const Vec3 tn = normalize(to_tangent_space(N));
+                                    px[0] = tn.x * 0.5f + 0.5f;
+                                    px[1] = tn.y * 0.5f + 0.5f;
+                                    px[2] = tn.z * 0.5f + 0.5f;
                                     break;
+                                }
                                 case BakeMap::ObjectNormal:
                                     px[0] = N.x * 0.5f + 0.5f;
                                     px[1] = N.y * 0.5f + 0.5f;
                                     px[2] = N.z * 0.5f + 0.5f;
                                     break;
                                 case BakeMap::Height: px[0] = dot(D, n); break;
-                                case BakeMap::VectorDisplacement:
-                                    px[0] = dot(D, T);
-                                    px[1] = dot(D, B);
-                                    px[2] = dot(D, n);
+                                case BakeMap::VectorDisplacement: {
+                                    const Vec3 td = to_tangent_space(D);
+                                    px[0] = td.x;
+                                    px[1] = td.y;
+                                    px[2] = td.z;
                                     break;
+                                }
                                 case BakeMap::AmbientOcclusion: {
                                     // Cosine-weighted hemisphere, stratified and rotated per texel.
                                     const Vec3 tx = normalize(cross(N, std::abs(N.x) < 0.9f ? Vec3{1, 0, 0} : Vec3{0, 1, 0}));
