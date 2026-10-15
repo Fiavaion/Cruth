@@ -1,0 +1,83 @@
+{
+  // Terminal > Run Task (or Cmd+Shift+B for the default build).
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Core: build (Release)",
+      "type": "shell",
+      "command": "cmake --preset release && cmake --build --preset release",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Core: build (Debug)",
+      "type": "shell",
+      "command": "cmake --preset debug && cmake --build --preset debug",
+      "group": "build",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Core: test (Release)",
+      "type": "shell",
+      "command": "ctest --preset release",
+      "dependsOn": "Core: build (Release)",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Core: test with sanitizers (ASan + UBSan)",
+      "type": "shell",
+      "command": "cmake --preset asan && cmake --build --preset asan && ctest --preset asan",
+      "group": "test",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Acceptance chain (smoke)",
+      "type": "shell",
+      "command": "${workspaceFolder}/build/release/tools/cruth-acceptance/cruth-acceptance --scale smoke --out ${workspaceFolder}/build/acceptance-smoke",
+      "dependsOn": "Core: build (Release)",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Acceptance chain (full, ~1-2 min)",
+      "type": "shell",
+      "command": "${workspaceFolder}/build/release/tools/cruth-acceptance/cruth-acceptance --scale full --out ${workspaceFolder}/build/acceptance-full",
+      "dependsOn": "Core: build (Release)",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "iPad: generate Xcode project",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ipad.sh generate",
+      "problemMatcher": []
+    },
+    {
+      "label": "iPad: build (simulator)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ipad.sh build",
+      "group": "build",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "iPad: run in simulator",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ipad.sh run",
+      "isBackground": false,
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "iPad: run on connected iPad",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ipad.sh device",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "iPad: open in Xcode",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ipad.sh open",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  // Debug the C++ core with CodeLLDB (vadimcn.vscode-lldb). The iPad app is
+  // debugged from Xcode (scripts/ipad.sh open) or attached to with LLDB.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Core: unit tests",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/debug/tests/cruth_tests",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Core: build (Debug)"
+    },
+    {
+      "name": "Core: acceptance chain (smoke)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/debug/tools/cruth-acceptance/cruth-acceptance",
+      "args": ["--scale", "smoke", "--out", "${workspaceFolder}/build/acceptance-debug"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Core: build (Debug)"
+    },
+    {
+      "name": "Core: cruth-cli (prompt for arguments)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/debug/tools/cruth-cli/cruth-cli",
+      "args": "${input:cliArgs}",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Core: build (Debug)"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "cliArgs",
+      "type": "promptString",
+      "description": "cruth-cli arguments",
+      "default": "new sphere build/base.obj --levels 4"
+    }
+  ]
+}

@@ -20,8 +20,8 @@ Every commit must carry a `Signed-off-by:` line certifying the [Developer Certif
 ## Before you open a pull request
 
 ```sh
-cmake -S . -B build -DCRUTH_WARNINGS_AS_ERRORS=ON -DCRUTH_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug
-cmake --build build --parallel && ctest --test-dir build --output-on-failure
+cmake --preset release && cmake --build --preset release && ctest --preset release
+cmake --preset asan && cmake --build --preset asan && ctest --preset asan
 ```
 
 If you touched `shell-ipad/`, build it in Xcode too (see the README). CI builds it for the simulator on every push.

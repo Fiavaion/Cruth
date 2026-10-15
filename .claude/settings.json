@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake:*)",
+      "Bash(ctest:*)",
+      "Bash(ninja:*)",
+      "Bash(./build/release/tests/cruth_tests:*)",
+      "Bash(./build/debug/tests/cruth_tests:*)",
+      "Bash(./build/release/tools/cruth-cli/cruth-cli:*)",
+      "Bash(./build/release/tools/cruth-acceptance/cruth-acceptance:*)",
+      "Bash(./scripts/ipad.sh generate)",
+      "Bash(./scripts/ipad.sh build)",
+      "Bash(xcodegen generate:*)",
+      "Bash(xcodebuild -version)",
+      "Bash(xcrun simctl list:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ]
+  }
+}

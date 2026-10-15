@@ -1,0 +1,90 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CRUTH_WARNINGS_AS_ERRORS": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "description": "Unoptimised with debug info; for stepping through the core.",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Optimised; the default for running tests, the CLI and the acceptance chain.",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "asan",
+      "displayName": "Debug + AddressSanitizer/UBSan",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CRUTH_SANITIZE": "ON" },
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "tsan",
+      "displayName": "RelWithDebInfo + ThreadSanitizer",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CRUTH_WARNINGS_AS_ERRORS": "OFF",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+      },
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "tsan", "configurePreset": "tsan" }
+  ],
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "release",
+      "displayName": "All tests (Release)",
+      "inherits": "base",
+      "configurePreset": "release"
+    },
+    {
+      "name": "debug",
+      "displayName": "Tests without the acceptance chain (Debug)",
+      "inherits": "base",
+      "configurePreset": "debug",
+      "filter": { "exclude": { "label": "acceptance" } }
+    },
+    {
+      "name": "asan",
+      "displayName": "Tests without the acceptance chain (ASan)",
+      "inherits": "base",
+      "configurePreset": "asan",
+      "filter": { "exclude": { "label": "acceptance" } }
+    },
+    {
+      "name": "tsan",
+      "displayName": "Tests without the acceptance chain (TSan)",
+      "inherits": "base",
+      "configurePreset": "tsan",
+      "filter": { "exclude": { "label": "acceptance" } }
+    }
+  ]
+}

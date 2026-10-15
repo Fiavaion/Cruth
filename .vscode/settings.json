@@ -1,0 +1,38 @@
+{
+  // C++ core: CMake Tools drives the presets in CMakePresets.json.
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": true,
+  "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
+  "cmake.ctest.testExplorerIntegrationEnabled": true,
+
+  // clangd reads compile_commands.json (copied above) for completion and diagnostics.
+  "clangd.arguments": ["--header-insertion=never", "--background-index", "--clang-tidy=false"],
+  "C_Cpp.intelliSenseEngine": "disabled",
+
+  "files.associations": {
+    "*.metal": "cpp",
+    "*.stroke": "plaintext"
+  },
+  "files.exclude": {
+    "build*/**": true,
+    "**/.DS_Store": true
+  },
+  "search.exclude": {
+    "build*/**": true,
+    "third_party/**": true,
+    "shell-ipad/*.xcodeproj/**": true
+  },
+  "files.watcherExclude": {
+    "build*/**": true,
+    "third_party/**": true
+  },
+
+  "editor.rulers": [120],
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "[cpp]": { "editor.tabSize": 4 },
+  "[c]": { "editor.tabSize": 4 },
+  "[swift]": { "editor.tabSize": 4 },
+  "[cmake]": { "editor.tabSize": 2 },
+  "[yaml]": { "editor.tabSize": 2 }
+}

@@ -47,29 +47,31 @@ docs/            PRD, research and roadmap.
 
 ## Build the core and run the tests
 
-You need CMake 3.21 or newer and a C++20 compiler (Clang 15+, GCC 12+ or Apple Clang from Xcode 15+), on macOS or Linux.
+**Setting up a laptop with VS Code and Claude Code? Start with [docs/SETUP.md](docs/SETUP.md).** On a Mac, `./scripts/setup-mac.sh` does everything below.
+
+You need CMake 3.21 or newer, Ninja and a C++20 compiler (Clang 15+, GCC 12+ or Apple Clang from Xcode 15+), on macOS or Linux.
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
+cmake --preset release
+cmake --build --preset release
+ctest --preset release
 ```
 
-Options: `-DCRUTH_SANITIZE=ON` for ASan and UBSan, and `-DCRUTH_WARNINGS_AS_ERRORS=ON` as CI uses.
+Other presets: `debug`, `asan` (AddressSanitizer + UBSan) and `tsan` (ThreadSanitizer). Builds go to `build/<preset>/`.
 
 ### Try the CLI
 
 ```sh
-./build/tools/cruth-cli/cruth-cli new sphere base.obj --levels 5
-./build/tools/cruth-cli/cruth-cli sculpt base.obj tests/data/head_blockout.stroke head.obj
-./build/tools/cruth-cli/cruth-cli subdivide head.obj head_smooth.obj
-./build/tools/cruth-cli/cruth-cli check head_smooth.obj
-./build/tools/cruth-cli/cruth-cli remesh head_smooth.obj head_remeshed.obj --resolution 192
-./build/tools/cruth-cli/cruth-cli decimate head_remeshed.obj head_low.obj --target 20000
-./build/tools/cruth-cli/cruth-cli quadremesh head_smooth.obj head_quads.obj --faces 5000
-./build/tools/cruth-cli/cruth-cli unwrap head_low.obj head_uv.obj
-./build/tools/cruth-cli/cruth-cli bake head_uv.obj head_smooth.obj head --maps normal,height,vdm,ao
-./build/tools/cruth-cli/cruth-cli convert head_low.obj head.stl
+./build/release/tools/cruth-cli/cruth-cli new sphere base.obj --levels 5
+./build/release/tools/cruth-cli/cruth-cli sculpt base.obj tests/data/head_blockout.stroke head.obj
+./build/release/tools/cruth-cli/cruth-cli subdivide head.obj head_smooth.obj
+./build/release/tools/cruth-cli/cruth-cli check head_smooth.obj
+./build/release/tools/cruth-cli/cruth-cli remesh head_smooth.obj head_remeshed.obj --resolution 192
+./build/release/tools/cruth-cli/cruth-cli decimate head_remeshed.obj head_low.obj --target 20000
+./build/release/tools/cruth-cli/cruth-cli quadremesh head_smooth.obj head_quads.obj --faces 5000
+./build/release/tools/cruth-cli/cruth-cli unwrap head_low.obj head_uv.obj
+./build/release/tools/cruth-cli/cruth-cli bake head_uv.obj head_smooth.obj head --maps normal,height,vdm,ao
+./build/release/tools/cruth-cli/cruth-cli convert head_low.obj head.stl
 ```
 
 Run `cruth-cli` with no arguments for the stroke-script syntax.
@@ -77,7 +79,7 @@ Run `cruth-cli` with no arguments for the stroke-script syntax.
 ### Run the acceptance chain
 
 ```sh
-./build/tools/cruth-acceptance/cruth-acceptance --scale full --out acceptance
+./build/release/tools/cruth-acceptance/cruth-acceptance --scale full --out acceptance
 ```
 
 This sculpts a reference head, quad-remeshes it with guide strokes, unwraps it with a painted seam onto two UDIM tiles, bakes normal and float displacement maps, then checks that the low mesh plus the displacement rebuilds the sculpt. It prints per-stage timings and pass/fail gates, writes `acceptance/report.json`, and exits non-zero if a gate fails. `--scale smoke` (the ctest and CI default) takes a few seconds; `full` (about 3M triangles, 20k quads, 4K maps) takes a little over a minute on four cores.
@@ -87,13 +89,12 @@ This sculpts a reference head, quad-remeshes it with guide strokes, unwraps it w
 The iPad shell needs a Mac with Xcode 26 (iPadOS 26 SDK). The Xcode project is generated from `shell-ipad/project.yml`, so it never conflicts in git.
 
 ```sh
-brew install xcodegen
-cd shell-ipad
-xcodegen generate
-open Cruth.xcodeproj
+./scripts/ipad.sh run      # build and launch in an iPad simulator
+./scripts/ipad.sh device   # build and launch on a connected iPad (signing: docs/SETUP.md section 5)
+./scripts/ipad.sh open     # open the generated project in Xcode
 ```
 
-Select an iPad simulator or a connected iPad, set your signing team under *Signing & Capabilities*, and run. The core's C++ sources are compiled directly into the app target.
+The core's C++ sources are compiled directly into the app target.
 
 **Controls:** draw with Apple Pencil to sculpt. One finger orbits, two fingers pan and pinch to zoom. Tap with two fingers to undo and three fingers to redo. Double-tap the Pencil to toggle invert; squeeze a Pencil Pro to toggle Smooth. Turn on *Finger Sculpting* in the brush panel to sculpt with a finger, for example in the simulator.
 
