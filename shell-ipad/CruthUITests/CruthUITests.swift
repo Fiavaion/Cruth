@@ -220,25 +220,46 @@ final class CruthUITests: XCTestCase {
         waitFor(stats, "label BEGINSWITH '6 quads'", timeout: 10, "undo did not remove the inserted loop")
     }
 
-    func testRetopoLoopAroundReportsAnOutcome() {
+    func testRetopoLoopAroundRefusesAShortStrokeAndTheMessageClears() {
         let stats = openRetopo(tool: "contour")
         drag(from: CGVector(dx: 0.4, dy: 0.42), to: CGVector(dx: 0.6, dy: 0.42))
         drag(from: CGVector(dx: 0.4, dy: 0.58), to: CGVector(dx: 0.6, dy: 0.58))
         waitFor(stats, "label BEGINSWITH '12 quads'", timeout: 10, "two contours did not bridge into 12 quads")
 
-        // A straight drag is all XCUITest can draw. The core joins its ends, so it
-        // either loops round the band or is refused with a reason; both are
-        // reported in the status bar, starting with "Loop" / "loop around".
+        // A straight drag is all XCUITest can draw. The core joins its ends, and a
+        // short one across the band encloses too few faces, so it is refused.
         selectRetopoTool("loopAround")
         drag(from: CGVector(dx: 0.45, dy: 0.5), to: CGVector(dx: 0.55, dy: 0.5))
         let message = app.staticTexts["statusMessage"]
-        waitFor(message, "label BEGINSWITH[c] 'loop'", timeout: 10,
-                "Loop Around reported nothing useful (message: \(statusMessage()))")
-        if message.label.hasPrefix("Loop of") {
-            XCTAssertGreaterThan(retopoQuads(stats), 12, "Loop Around reported success but added no quads")
-        } else {
-            XCTAssertEqual(retopoQuads(stats), 12, "a refused Loop Around changed the cage")
-        }
+        XCTAssertTrue(message.waitForExistence(timeout: 10), "Loop Around reported nothing")
+        XCTAssertEqual(message.label, "loop around: the stroke must go round at least three faces")
+        XCTAssertEqual(retopoQuads(stats), 12, "a refused Loop Around changed the cage")
+        // The refusal is a flash, gone after about 4 s.
+        waitFor(message, "exists == false", timeout: 6, "the refusal message did not clear")
+    }
+
+    func testTwoFingerTapUndoesInQuadPen() {
+        let stats = openRetopo(tool: "strip")
+        drag(from: CGVector(dx: 0.4, dy: 0.5), to: CGVector(dx: 0.6, dy: 0.5))
+        waitFor(stats, "label BEGINSWITH '6 quads'", timeout: 10, "strip stroke did not add 6 quads")
+
+        // Both fingers land on the model: the tap undoes the strip and places no corner.
+        selectRetopoTool("quadPen")
+        viewport.twoFingerTap()
+        waitFor(stats, "label BEGINSWITH '0 quads'", timeout: 10, "two-finger tap did not undo the strip")
+        XCTAssertTrue(app.staticTexts["quadPenPending"].label.hasPrefix("0 taps"),
+                      "two-finger tap placed a quad-pen corner: \(app.staticTexts["quadPenPending"].label)")
+    }
+
+    func testTwoFingerTapUndoesInInsertLoop() {
+        let stats = openRetopo(tool: "strip")
+        drag(from: CGVector(dx: 0.4, dy: 0.5), to: CGVector(dx: 0.6, dy: 0.5))
+        waitFor(stats, "label BEGINSWITH '6 quads'", timeout: 10, "strip stroke did not add 6 quads")
+
+        selectRetopoTool("insertLoop")
+        viewport.twoFingerTap()
+        waitFor(stats, "label BEGINSWITH '0 quads'", timeout: 10,
+                "two-finger tap did not undo the strip (message: \(statusMessage()))")
     }
 
     func testPrintCheckReportsTheSphereAsPrintable() {
