@@ -304,6 +304,7 @@ final class SculptSession: ObservableObject {
     }
 
     func cancelRetopo() {
+        guard !isBusy else { return }  // Apply may still be reading the cage off the main thread
         if let retopo { cruth_retopo_destroy(retopo) }
         retopo = nil
         retopoEdges = []
@@ -356,7 +357,7 @@ final class SculptSession: ObservableObject {
 
     /// Serialises the current mesh through the core's exporter.
     func exportData(_ format: MeshFileFormat) -> Data? {
-        guard let document else { return nil }
+        guard let document, !isBusy else { return nil }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("cruth-export-\(UUID().uuidString).\(format.rawValue)")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -595,7 +596,7 @@ final class SculptSession: ObservableObject {
     }
 
     func printReport() -> CruthPrintReport? {
-        guard let document else { return nil }
+        guard let document, !isBusy else { return nil }
         var result = CruthPrintReport()
         let status = cruth_document_check_print(document, &result)
         guard status == CRUTH_OK else {

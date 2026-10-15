@@ -86,6 +86,7 @@ struct ContentView: View {
                     .labelStyle(.titleAndIcon)
                     .font(.headline)
             }
+            .disabled(session.isBusy)
 
             Picker("Mode", selection: Binding(get: { session.mode }, set: { session.setMode($0) })) {
                 ForEach(WorkMode.allCases) { Text($0.title).tag($0) }
@@ -97,26 +98,33 @@ struct ContentView: View {
 
             Spacer()
 
-            topologyMenu
-            levelStepper
-            Button { showPrintCheck = true } label: { Label("Print Check", systemImage: "printer") }
-                .accessibilityIdentifier("printCheckButton")
-            Menu {
-                Button("Clear Mask") { session.clearMask() }
-                Button("Invert Mask") { session.invertMask() }
-            } label: {
-                Label("Mask", systemImage: "theatermasks")
+            // Everything here edits or reads the document, which a background
+            // command owns while busy.
+            Group {
+                topologyMenu
+                levelStepper
+                Button { showPrintCheck = true } label: { Label("Print Check", systemImage: "printer") }
+                    .accessibilityIdentifier("printCheckButton")
+                Menu {
+                    Button("Clear Mask") { session.clearMask() }
+                    Button("Invert Mask") { session.invertMask() }
+                } label: {
+                    Label("Mask", systemImage: "theatermasks")
+                }
             }
+            .disabled(session.isBusy)
 
             Divider().frame(height: 24)
 
             Button { session.undo() } label: { Image(systemName: "arrow.uturn.backward") }
                 .disabled(!session.undoAvailable)
                 .keyboardShortcut("z", modifiers: .command)
+                .disabled(session.isBusy)
                 .accessibilityIdentifier("undoButton")
             Button { session.redo() } label: { Image(systemName: "arrow.uturn.forward") }
                 .disabled(!session.redoAvailable)
                 .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(session.isBusy)
                 .accessibilityIdentifier("redoButton")
         }
         .labelStyle(.iconOnly)
@@ -319,6 +327,7 @@ struct GuidesPanel: View {
                 .disabled(session.guideStrokes.isEmpty)
                 .accessibilityIdentifier("clearGuidesButton")
         }
+        .disabled(session.isBusy)
         .font(.subheadline)
         .frame(width: 220, alignment: .leading)
         .padding(12)
@@ -382,6 +391,8 @@ struct RetopoPanel: View {
             }
             Toggle("Keep Sculpt Detail", isOn: $session.keepDetail)
         }
+        // Cancel or a cage edit during Apply would free or change the cage it is reading.
+        .disabled(session.isBusy)
         .toggleStyle(.switch)
         .font(.subheadline)
         .frame(width: 240, alignment: .leading)
