@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "cruth/bake.hpp"
 #include "cruth/document.hpp"
@@ -246,4 +247,123 @@ TEST(game_asset_export_writes_obj_and_maps) {
     CHECK(uv.matches(low.value()));
     CHECK_EQ(doc.level_count(), 3);  // the document is unchanged
     for (const auto& f : r.value().files) std::remove(f.c_str());
+}
+
+namespace {
+
+std::vector<int> cell_groups(const Mesh& m, float cell) {
+    std::vector<int> g(m.face_count());
+    for (std::size_t f = 0; f < m.face_count(); ++f) {
+        const Vec3 c = m.face_centroid(f);
+        const int x = int(std::floor(c.x / cell)), y = int(std::floor(c.y / cell)), z = int(std::floor(c.z / cell));
+        g[f] = (x + 20) * 1600 + (y + 20) * 40 + (z + 20);
+    }
+    return g;
+}
+
+}  // namespace
+
+namespace {
+
+// Packing efficiency (chart UV area / tile area) of the shelf packer this
+// replaced, measured on these exact inputs, and what the MaxRects packer must
+// now reach. Tile 0 of the two-tile case is what `old_utilisation` records.
+struct PackCase {
+    const char* name;
+    Mesh mesh;
+    UnwrapOptions options;
+    float old_utilisation;
+    float min_utilisation;
+};
+
+std::vector<PackCase> pack_cases() {
+    std::vector<PackCase> cases;
+    cases.push_back({"sphere4", make_quad_sphere(4, 1.0f), {}, 0.3955f, 0.52f});
+    cases.push_back({"sphere5", make_quad_sphere(5, 1.0f), {}, 0.3853f, 0.58f});
+    {
+        Mesh m = make_quad_sphere(5, 1.0f);
+        UnwrapOptions o;
+        o.face_groups = cell_groups(m, 0.35f);  // ~150 charts of mixed size and shape
+        cases.push_back({"many_charts", std::move(m), o, 0.6446f, 0.67f});
+    }
+    {
+        Mesh m = make_quad_sphere(5, 1.0f);
+        UnwrapOptions o;
+        o.face_groups = cell_groups(m, 0.2f);
+        o.tiles = 2;
+        cases.push_back({"many_charts_two_tiles", std::move(m), o, 0.6239f, 0.64f});
+    }
+    return cases;
+}
+
+}  // namespace
+
+TEST(unwrap_packing_beats_shelf_baseline) {
+    for (auto& c : pack_cases()) {
+        UnwrapStats stats;
+        auto r = auto_unwrap(c.mesh, c.options, &stats);
+        REQUIRE(r.is_ok());
+        const auto tiles = uv_tile_utilisation(c.mesh, r.value());
+        REQUIRE(tiles.size() == std::size_t(c.options.tiles));
+        REQUIRE(stats.tile_utilisation.size() == tiles.size());
+        float mean = 0;
+        for (std::size_t t = 0; t < tiles.size(); ++t) {
+            CHECK_NEAR(tiles[t], stats.tile_utilisation[t], 1e-6);
+            CHECK(tiles[t] >= c.min_utilisation);
+            CHECK(tiles[t] >= c.old_utilisation);
+            mean += tiles[t] / float(tiles.size());
+        }
+        CHECK_NEAR(mean, stats.utilisation, 1e-4);
+        CHECK_EQ(count_flipped_uv_faces(c.mesh, r.value()), 0u);
+        if (cruth_test::failures() != 0) std::fprintf(stderr, "  case %s: utilisation %.4f\n", c.name, mean);
+    }
+}
+
+TEST(unwrap_charts_do_not_overlap_and_keep_padding) {
+    for (auto& c : pack_cases()) {
+        auto r = auto_unwrap(c.mesh, c.options);
+        REQUIRE(r.is_ok());
+        const UVSet& uv = r.value();
+        struct Box { float x0, y0, x1, y1; int tile; };
+        std::vector<Box> box(uv.chart_count, {1e30f, 1e30f, -1e30f, -1e30f, 0});
+        for (std::size_t f = 0; f < c.mesh.face_count(); ++f) {
+            Box& b = box[uv.face_chart[f]];
+            b.tile = int(std::floor(uv.corner(c.mesh, f, 0).x));
+            for (std::size_t i = 0; i < c.mesh.face_size(f); ++i) {
+                const Vec2 p = uv.corner(c.mesh, f, i);
+                b.x0 = std::min(b.x0, p.x - float(b.tile));
+                b.x1 = std::max(b.x1, p.x - float(b.tile));
+                b.y0 = std::min(b.y0, p.y);
+                b.y1 = std::max(b.y1, p.y);
+            }
+        }
+        // Texel padding: padding_texels on each side of a chart, so charts sit
+        // 2 * padding_texels apart and padding_texels from the tile edge.
+        const float pad = float(c.options.padding_texels) / float(c.options.resolution) * 0.99f;
+        for (std::size_t a = 0; a < box.size(); ++a) {
+            CHECK(box[a].x0 >= pad && box[a].y0 >= pad);
+            CHECK(box[a].x1 <= 1 - pad && box[a].y1 <= 1 - pad);
+            for (std::size_t b = a + 1; b < box.size(); ++b) {
+                if (box[a].tile != box[b].tile) continue;
+                const float gap_x = std::max(box[a].x0 - box[b].x1, box[b].x0 - box[a].x1);
+                const float gap_y = std::max(box[a].y0 - box[b].y1, box[b].y0 - box[a].y1);
+                // Separated on at least one axis by the full padding. Boxes
+                // are of the (rotated) charts, so disjoint boxes mean no overlap.
+                CHECK(std::max(gap_x, gap_y) >= 2 * pad);
+            }
+        }
+    }
+}
+
+TEST(unwrap_is_deterministic) {
+    auto cases = pack_cases();
+    for (auto& c : cases) {
+        auto a = auto_unwrap(c.mesh, c.options);
+        auto b = auto_unwrap(c.mesh, c.options);
+        REQUIRE(a.is_ok() && b.is_ok());
+        REQUIRE(a.value().uvs.size() == b.value().uvs.size());
+        CHECK(std::memcmp(a.value().uvs.data(), b.value().uvs.data(), a.value().uvs.size() * sizeof(Vec2)) == 0);
+        CHECK(a.value().corner_uv == b.value().corner_uv);
+        CHECK(a.value().face_chart == b.value().face_chart);
+    }
 }

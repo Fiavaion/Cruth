@@ -114,6 +114,7 @@ struct Chart {
     int tile = 0;
     Vec2 size;                    // bounding box after rotation (world units)
     Vec2 offset;                  // placement in the tile (world units)
+    bool turned = false;          // packed with a quarter turn, not yet applied to uv/size
 };
 
 std::vector<Chart> grow_charts(const Mesh& mesh, const UnwrapOptions& o) {
@@ -350,11 +351,14 @@ void normalise_chart(const Mesh& mesh, Chart& chart) {
     const float s = area2d > 0 ? float(std::sqrt(area3d / area2d)) : 1.0f;
     for (auto& p : chart.uv) p = p * s;
 
+    // Rotating calipers: the tightest box has a side flush with a hull edge.
     const std::vector<Vec2> hull = convex_hull(chart.uv);
     float best_area = 3.4e38f, best_angle = 0;
-    for (int step = 0; step < 45; ++step) {
-        const float a = float(step) * std::numbers::pi_v<float> / 90.0f;  // 0..88 degrees
-        const float c = std::cos(a), sn = std::sin(a);
+    for (std::size_t i = 0; i < hull.size() && hull.size() >= 3; ++i) {
+        const Vec2 e = hull[(i + 1) % hull.size()] - hull[i];
+        const float len = std::sqrt(e.x * e.x + e.y * e.y);
+        if (len <= 0) continue;
+        const float c = e.x / len, sn = -e.y / len;  // rotates the edge onto +x
         float x0 = 3.4e38f, x1 = -3.4e38f, y0 = 3.4e38f, y1 = -3.4e38f;
         for (Vec2 p : hull) {
             const float x = c * p.x - sn * p.y, y = sn * p.x + c * p.y;
@@ -363,9 +367,9 @@ void normalise_chart(const Mesh& mesh, Chart& chart) {
             y0 = std::min(y0, y);
             y1 = std::max(y1, y);
         }
-        if ((x1 - x0) * (y1 - y0) < best_area) {
+        if ((x1 - x0) * (y1 - y0) < best_area * 0.99999f) {
             best_area = (x1 - x0) * (y1 - y0);
-            best_angle = a;
+            best_angle = std::atan2(sn, c);
         }
     }
     const float c = std::cos(best_angle), sn = std::sin(best_angle);
@@ -388,29 +392,150 @@ void normalise_chart(const Mesh& mesh, Chart& chart) {
     chart.size = hi - lo;
 }
 
-// Shelf packing of the charts in one tile. Returns the square side used.
-float pack_tile(std::vector<Chart*>& charts, float pad) {
-    std::sort(charts.begin(), charts.end(), [](const Chart* a, const Chart* b) { return a->size.y > b->size.y; });
-    double area = 0;
-    float widest = 0;
-    for (const Chart* c : charts) {
-        area += double(c->size.x + pad) * double(c->size.y + pad);
-        widest = std::max(widest, c->size.x + pad);
-    }
-    const float width = std::max(widest, float(std::sqrt(area) * 1.08));
-    float x = 0, y = 0, shelf = 0, used_w = 0;
+// MaxRects packing (best short side fit). A tile is a square of side `side`;
+// every chart takes a (size + pad) cell and may turn 90 degrees. Deterministic:
+// ties resolve by list order, and no hash container is iterated.
+struct FreeRect {
+    float x, y, w, h;
+};
+
+bool contains(const FreeRect& a, const FreeRect& b) {
+    return b.x >= a.x && b.y >= a.y && b.x + b.w <= a.x + a.w && b.y + b.h <= a.y + a.h;
+}
+
+// Charts are already sorted; returns false when one does not fit.
+bool pack_tile(const std::vector<Chart*>& charts, float side, float pad) {
+    const float eps = side * 1e-6f;
+    std::vector<FreeRect> free_rects{{0, 0, side, side}};
+    std::vector<FreeRect> next;
     for (Chart* c : charts) {
-        if (x > 0 && x + c->size.x + pad > width) {
-            y += shelf;
-            x = 0;
-            shelf = 0;
+        const float w = c->size.x + pad, h = c->size.y + pad;
+        float best_short = 3.4e38f, best_long = 3.4e38f;
+        std::size_t best = free_rects.size();
+        bool best_turn = false;
+        for (std::size_t i = 0; i < free_rects.size(); ++i) {
+            const FreeRect& r = free_rects[i];
+            for (int turn = 0; turn < 2; ++turn) {
+                const float cw = turn ? h : w, ch = turn ? w : h;
+                if (cw > r.w + eps || ch > r.h + eps) continue;
+                const float lo = std::min(r.w - cw, r.h - ch), hi = std::max(r.w - cw, r.h - ch);
+                if (lo < best_short || (lo == best_short && hi < best_long)) {
+                    best_short = lo;
+                    best_long = hi;
+                    best = i;
+                    best_turn = turn != 0;
+                }
+            }
         }
-        c->offset = {x + pad * 0.5f, y + pad * 0.5f};
-        x += c->size.x + pad;
-        used_w = std::max(used_w, x);
-        shelf = std::max(shelf, c->size.y + pad);
+        if (best == free_rects.size()) return false;
+        c->turned = best_turn;  // applied by apply_turns once the layout is final
+        const FreeRect placed{free_rects[best].x, free_rects[best].y, best_turn ? h : w, best_turn ? w : h};
+        c->offset = {placed.x + pad * 0.5f, placed.y + pad * 0.5f};
+
+        next.clear();
+        for (const FreeRect& r : free_rects) {
+            if (placed.x >= r.x + r.w || placed.x + placed.w <= r.x || placed.y >= r.y + r.h ||
+                placed.y + placed.h <= r.y) {
+                next.push_back(r);
+                continue;
+            }
+            if (placed.x > r.x) next.push_back({r.x, r.y, placed.x - r.x, r.h});
+            if (placed.x + placed.w < r.x + r.w) {
+                next.push_back({placed.x + placed.w, r.y, r.x + r.w - placed.x - placed.w, r.h});
+            }
+            if (placed.y > r.y) next.push_back({r.x, r.y, r.w, placed.y - r.y});
+            if (placed.y + placed.h < r.y + r.h) {
+                next.push_back({r.x, placed.y + placed.h, r.w, r.y + r.h - placed.y - placed.h});
+            }
+        }
+        free_rects.clear();
+        for (std::size_t i = 0; i < next.size(); ++i) {
+            bool redundant = false;
+            for (std::size_t j = 0; j < next.size() && !redundant; ++j) {
+                // Equal rectangles: keep the first.
+                redundant = i != j && contains(next[j], next[i]) &&
+                            (!contains(next[i], next[j]) || j < i);
+            }
+            if (!redundant) free_rects.push_back(next[i]);
+        }
     }
-    return std::max(used_w, y + shelf);
+    return true;
+}
+
+// Applies the quarter turns the packer chose. Counter-clockwise keeps the winding.
+void apply_turns(std::vector<Chart>& charts) {
+    for (Chart& c : charts) {
+        if (!c.turned) continue;
+        for (auto& p : c.uv) p = {c.size.y - p.y, p.x};
+        c.size = {c.size.y, c.size.x};
+        c.turned = false;
+    }
+}
+
+bool pack_all(const std::vector<std::vector<Chart*>>& tiles, float side, float pad) {
+    for (const auto& t : tiles) {
+        if (!pack_tile(t, side, pad)) return false;
+    }
+    return true;
+}
+
+// Smallest square (to ~0.3%) that holds every tile's charts at padding `pad`
+// for the current chart order.
+float fit_square(const std::vector<std::vector<Chart*>>& tiles, float pad) {
+    double most_area = 0;
+    float widest = 0;
+    for (const auto& t : tiles) {
+        double a = 0;
+        for (const Chart* c : t) {
+            a += double(c->size.x + pad) * double(c->size.y + pad);
+            widest = std::max(widest, std::min(c->size.x, c->size.y) + pad);
+        }
+        most_area = std::max(most_area, a);
+    }
+    float lo = std::max(widest, float(std::sqrt(most_area)));  // cannot be smaller
+    float hi = lo;
+    while (!pack_all(tiles, hi, pad)) {
+        lo = hi;
+        hi *= 1.04f;
+    }
+    for (int i = 0; i < 12 && hi - lo > hi * 0.003f; ++i) {
+        const float mid = 0.5f * (lo + hi);
+        (pack_all(tiles, mid, pad) ? hi : lo) = mid;
+    }
+    return hi;
+}
+
+void sort_tiles(std::vector<std::vector<Chart*>>& tiles, float (*key)(const Chart&)) {
+    for (auto& t : tiles) {
+        std::sort(t.begin(), t.end(), [key](const Chart* a, const Chart* b) {
+            const float ka = key(*a), kb = key(*b);
+            return ka != kb ? ka > kb : a < b;  // pointers into one vector: stable tie-break
+        });
+    }
+}
+
+// Tries a few insertion orders and keeps the tightest; leaves the charts
+// placed at the returned size. Ties keep the earlier order.
+float pack_tiles(std::vector<std::vector<Chart*>>& tiles, float pad) {
+    using Key = float (*)(const Chart&);
+    const Key keys[] = {
+        [](const Chart& c) { return std::max(c.size.x, c.size.y); },
+        [](const Chart& c) { return c.size.x * c.size.y; },
+        [](const Chart& c) { return c.size.x + c.size.y; },
+    };
+    float best = 3.4e38f;
+    std::size_t best_key = 0;
+    for (std::size_t k = 0; k < std::size(keys); ++k) {
+        sort_tiles(tiles, keys[k]);
+        const float side = fit_square(tiles, pad);
+        if (side < best * 0.9999f) {
+            best = side;
+            best_key = k;
+        }
+    }
+    sort_tiles(tiles, keys[best_key]);
+    pack_all(tiles, best, pad);  // earlier probes left other layouts behind
+    return best;
 }
 
 }  // namespace
@@ -438,7 +563,10 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options, Unwrap
     std::vector<Chart*> order;
     for (auto& c : charts) order.push_back(&c);
     std::sort(order.begin(), order.end(),
-              [](const Chart* a, const Chart* b) { return a->size.x * a->size.y > b->size.x * b->size.y; });
+              [](const Chart* a, const Chart* b) {
+                  const float aa = a->size.x * a->size.y, ab = b->size.x * b->size.y;
+                  return aa != ab ? aa > ab : a < b;  // pointers into one vector: stable tie-break
+              });
     std::vector<double> tile_area(tiles, 0.0);
     std::vector<std::vector<Chart*>> per_tile(tiles);
     for (Chart* c : order) {
@@ -448,13 +576,18 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options, Unwrap
         per_tile[t].push_back(c);
     }
 
-    // Padding is in texels, so it depends on the final scale: iterate.
-    float side = 0;
-    for (int pass = 0; pass < 3; ++pass) {
-        const float pad = pass == 0 ? 0.0f : float(options.padding_texels) * side / float(resolution) * 2.0f;
-        side = 0;
-        for (auto& tile : per_tile) side = std::max(side, pack_tile(tile, pad));
+    // Padding is in texels, so it depends on the final scale: iterate until
+    // the gap (2 * padding_texels, as before) holds at the size we ended up with.
+    float side = pack_tiles(per_tile, 0.0f);
+    for (int pass = 0; pass < 6; ++pass) {
+        const float pad_fraction = float(options.padding_texels) * 2.0f / float(resolution);
+        const float pad = pad_fraction * side * (pass < 5 ? 1.02f : 1.1f);
+        const float packed = pack_tiles(per_tile, pad);
+        const bool holds = pad >= pad_fraction * packed;
+        side = packed;
+        if (holds) break;
     }
+    apply_turns(charts);
     const float scale = side > 0 ? 1.0f / side : 1.0f;  // uv units per world unit, shared by all tiles
 
     UVSet out;
@@ -486,6 +619,7 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options, Unwrap
             for (Index f : c.faces) used += mesh.face_area(f);
         }
         stats->utilisation = float(used * scale * scale / tiles);
+        stats->tile_utilisation = uv_tile_utilisation(mesh, out);
         const auto distortion = uv_area_distortion(mesh, out);
         float worst = 1;
         for (float d : distortion) {
@@ -552,6 +686,20 @@ std::vector<float> uv_area_distortion(const Mesh& mesh, const UVSet& uv) {
         ratio[f] = a3[f] > 0 ? float(a2[f] / a3[f] * norm) : 0.0f;
     }
     return ratio;
+}
+
+std::vector<float> uv_tile_utilisation(const Mesh& mesh, const UVSet& uv) {
+    std::vector<double> area(std::size_t(std::max(uv.tiles, 1)), 0.0);
+    for (std::size_t f = 0; f < mesh.face_count(); ++f) {
+        double a = 0;
+        for (std::size_t i = 1; i + 1 < mesh.face_size(f); ++i) {
+            a += 0.5 * std::abs(cross(uv.corner(mesh, f, i) - uv.corner(mesh, f, 0),
+                                      uv.corner(mesh, f, i + 1) - uv.corner(mesh, f, 0)));
+        }
+        const auto tile = std::size_t(std::clamp(int(std::floor(uv.corner(mesh, f, 0).x)), 0, int(area.size()) - 1));
+        area[tile] += a;
+    }
+    return {area.begin(), area.end()};
 }
 
 std::size_t count_flipped_uv_faces(const Mesh& mesh, const UVSet& uv) {

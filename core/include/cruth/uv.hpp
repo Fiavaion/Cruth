@@ -8,8 +8,10 @@
 //    seams), limited by a normal cone so every chart is disk-like;
 // 2. parameterisation: least-squares conformal maps (LSCM), solved as the
 //    symmetric conformal energy E_D - A with preconditioned conjugate gradient;
-// 3. packing: each chart scaled to true area, rotated to its tightest box,
-//    shelf-packed with texel padding into one or more UDIM tiles.
+// 3. packing: each chart scaled to true area, rotated to its tightest box
+//    (rotating calipers), then MaxRects-packed (90 degree turns allowed) with
+//    texel padding into the smallest square that holds them, over one or more
+//    UDIM tiles.
 // SPDX-License-Identifier: MIT
 #pragma once
 
@@ -52,6 +54,7 @@ struct UnwrapStats {
     std::size_t charts = 0;
     float texels_per_unit = 0;   // texel density at `resolution`
     float utilisation = 0;       // chart area / tile area, averaged over tiles
+    std::vector<float> tile_utilisation;  // chart area / tile area, per tile
     float max_stretch = 0;       // worst per-face area ratio (uv / 3D, normalised)
 };
 
@@ -65,6 +68,11 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options = {}, U
 // Per-face area distortion: (uv area / 3D area) / (total uv area / total 3D
 // area). 1 is ideal; used for heat maps (PRD U-06).
 std::vector<float> uv_area_distortion(const Mesh& mesh, const UVSet& uv);
+
+// Packing efficiency per UDIM tile: UV area of the faces in the tile divided
+// by the tile's unit area. Measured from the UVs alone, so it also covers
+// layouts that did not come from auto_unwrap.
+std::vector<float> uv_tile_utilisation(const Mesh& mesh, const UVSet& uv);
 
 // Number of faces whose UV winding is flipped relative to the majority.
 std::size_t count_flipped_uv_faces(const Mesh& mesh, const UVSet& uv);
