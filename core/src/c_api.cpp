@@ -420,6 +420,54 @@ void cruth_retopo_relax(CruthRetopo* retopo, int32_t iterations) {
         });
 }
 
+bool cruth_retopo_nearest_edge(const CruthRetopo* retopo, CruthVec3 point, uint32_t* a, uint32_t* b) {
+    if (!retopo || !a || !b) return false;
+    return guarded_value(false, [&] {
+        const auto [ea, eb] = retopo->retopo.nearest_edge(to_core(point));
+        if (ea == cruth::kInvalidIndex) return false;
+        *a = ea;
+        *b = eb;
+        return true;
+    });
+}
+
+CruthStatus cruth_retopo_slide_loop_begin(CruthRetopo* retopo, uint32_t a, uint32_t b, CruthVec3* axis) {
+    if (!retopo) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        auto r = retopo->retopo.begin_slide(a, b);
+        if (!r) return from_error(r.error());
+        if (axis) *axis = to_c(r.value());
+        return CRUTH_OK;
+    });
+}
+
+void cruth_retopo_slide_loop_update(CruthRetopo* retopo, float t) {
+    if (retopo) retopo->retopo.update_slide(t);
+}
+
+void cruth_retopo_slide_loop_end(CruthRetopo* retopo) {
+    if (retopo) retopo->retopo.end_slide();
+}
+
+CruthStatus cruth_retopo_slide_loop(CruthRetopo* retopo, uint32_t a, uint32_t b, float t) {
+    if (!retopo) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        auto s = retopo->retopo.slide_loop(a, b, t);
+        return s ? CRUTH_OK : from_error(s.error());
+    });
+}
+
+bool cruth_retopo_undo(CruthRetopo* retopo) {
+    return retopo && guarded_value(false, [&] { return retopo->retopo.undo(); });
+}
+
+bool cruth_retopo_redo(CruthRetopo* retopo) {
+    return retopo && guarded_value(false, [&] { return retopo->retopo.redo(); });
+}
+
+bool cruth_retopo_can_undo(const CruthRetopo* retopo) { return retopo && retopo->retopo.can_undo(); }
+bool cruth_retopo_can_redo(const CruthRetopo* retopo) { return retopo && retopo->retopo.can_redo(); }
+
 CruthRetopoStats cruth_retopo_stats(const CruthRetopo* retopo) {
     CruthRetopoStats out{};
     if (!retopo) return out;

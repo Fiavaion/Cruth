@@ -207,6 +207,33 @@ void cruth_retopo_quad_pen_lift(CruthRetopo* retopo);
 /* Pending tap positions for an overlay. Returns the count; writes at most capacity. */
 size_t cruth_retopo_quad_pen_pending(const CruthRetopo* retopo, CruthVec3* out, size_t capacity);
 void cruth_retopo_relax(CruthRetopo* retopo, int32_t iterations);
+
+/* Edge of the cage nearest to point, as two vertex indices. Returns false when
+ * the cage has no edges. */
+bool cruth_retopo_nearest_edge(const CruthRetopo* retopo, CruthVec3 point, uint32_t* a, uint32_t* b);
+
+/* Slide loop (T-03): slides the edge loop through edge (a, b) between its
+ * neighbouring rings, re-projected onto the surface. The loop runs straight on
+ * through valence-4 vertices and stops at poles and borders.
+ * begin: picks the loop; writes to axis (nullable) how far t = 1 moves the
+ *        middle of edge (a, b) (on a border with no face on that side, the
+ *        reverse of the t = -1 move), so a 3D drag d maps to
+ *        t = dot(d, axis) / dot(axis, axis).
+ * update: t in (-1, 1), absolute from where the loop was at begin (clamped to
+ *        +-0.99). t > 0 moves toward the side the axis points to.
+ * end:   finishes; begin..end is one cage undo step. Any other edit also ends it. */
+CruthStatus cruth_retopo_slide_loop_begin(CruthRetopo* retopo, uint32_t a, uint32_t b, CruthVec3* axis);
+void cruth_retopo_slide_loop_update(CruthRetopo* retopo, float t);
+void cruth_retopo_slide_loop_end(CruthRetopo* retopo);
+/* begin + update + end in one call. */
+CruthStatus cruth_retopo_slide_loop(CruthRetopo* retopo, uint32_t a, uint32_t b, float t);
+
+/* Undo history of cage edits (strips, contours, quads, loops, slides, relax),
+ * separate from the document's: cruth_retopo_apply is the document's undo step. */
+bool cruth_retopo_undo(CruthRetopo* retopo);
+bool cruth_retopo_redo(CruthRetopo* retopo);
+bool cruth_retopo_can_undo(const CruthRetopo* retopo);
+bool cruth_retopo_can_redo(const CruthRetopo* retopo);
 CruthRetopoStats cruth_retopo_stats(const CruthRetopo* retopo);
 /* Edges as line segments for an overlay: 6 floats per edge. Returns the edge count;
  * writes at most float_capacity / 6 edges. */

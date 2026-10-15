@@ -75,6 +75,8 @@ int usage() {
         "  strip WIDTH SEGMENTS  stroke (p lines, then end) -> quad strip\n"
         "  tap X Y Z         quad pen: every 4th tap makes a quad, then each 2 more extend the strip\n"
         "  tap-lift          end the quad-pen chain\n"
+        "  slide-loop X Y Z T  slide the edge loop through the edge nearest X Y Z by T in (-1, 1)\n"
+        "  retopo-undo | retopo-redo   step through the retopology's own history\n"
         "  retopo-relax N | retopo-apply L   relax, or replace the sculpt keeping L levels\n"
         "brush types: standard clay inflate smooth flatten pinch crease grab mask\n",
         stderr);
@@ -269,6 +271,18 @@ int run_sculpt(const std::string& in_path, const std::string& script_path, const
             if (!(in >> p.x >> p.y >> p.z)) return fail(where() + "expected 'tap X Y Z'");
             auto r = retopo->quad_pen_tap(p);
             if (!r) return fail(where() + r.error().message);
+        } else if (cmd == "slide-loop") {
+            if (!retopo) return fail(where() + "run retopo-begin first");
+            Vec3 p;
+            float t = 0;
+            if (!(in >> p.x >> p.y >> p.z >> t)) return fail(where() + "expected 'slide-loop X Y Z T'");
+            const auto [a, b] = retopo->nearest_edge(p);
+            auto s = retopo->slide_loop(a, b, t);
+            if (!s) return fail(where() + s.error().message);
+        } else if (cmd == "retopo-undo" || cmd == "retopo-redo") {
+            if (!retopo) return fail(where() + "run retopo-begin first");
+            const bool done = cmd == "retopo-undo" ? retopo->undo() : retopo->redo();
+            if (!done) return fail(where() + "nothing to " + cmd.substr(7));
         } else if (cmd == "retopo-relax") {
             int n = 1;
             in >> n;

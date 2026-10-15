@@ -11,4 +11,22 @@ tap 0.15 0.89 0.45
 tap -0.15 0.89 0.45
 tap-lift
 
+# Three contour loops round the middle, then slide the edge loop nearest a
+# point on the middle one a quarter of the way to its neighbour; undo, redo.
+contour 12 0 0 -1
+p -1.2 -0.4 0.6
+p 1.2 -0.4 0.6
+end
+contour 12 0 0 -1
+p -1.2 -0.2 0.6
+p 1.2 -0.2 0.6
+end
+contour 12 0 0 -1
+p -1.2 0.0 0.6
+p 1.2 0.0 0.6
+end
+slide-loop 0 -0.2 1 0.25
+retopo-undo
+retopo-redo
+
 retopo-apply 1

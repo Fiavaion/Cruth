@@ -383,3 +383,194 @@ TEST(c_api_quad_pen) {
     cruth_retopo_destroy(retopo);
     cruth_document_destroy(doc);
 }
+
+namespace {
+
+// Five 8-vertex contour rings round the capsule at y = -1, -0.5, 0, 0.5, 1.
+std::vector<std::vector<Index>> capsule_tube(RetopoMesh& r) {
+    std::vector<std::vector<Index>> rings;
+    for (int i = 0; i < 5; ++i) {
+        const float y = -1.0f + 0.5f * float(i);
+        const std::vector<Vec3> stroke{{-0.6f, y, 0.4f}, {0.6f, y, 0.4f}};
+        auto ring = r.add_contour(stroke, 8, {0, 0, -1});
+        if (ring) rings.push_back(ring.value());
+    }
+    return rings;
+}
+
+}  // namespace
+
+TEST(slide_loop_between_neighbouring_rings) {
+    const Mesh ref = capsule();
+    RetopoMesh r(ref);
+    const auto rings = capsule_tube(r);
+    REQUIRE(rings.size() == 5u);
+    const std::vector<Vec3> before = r.mesh().positions;
+    const auto& mid = rings[2];
+
+    auto loop = r.edge_loop(mid[0], mid[1]);
+    REQUIRE(loop.is_ok());
+    CHECK(loop.value().closed);
+    CHECK_EQ(loop.value().vertices.size(), 8u);
+    CHECK(std::is_permutation(mid.begin(), mid.end(), loop.value().vertices.begin()));
+
+    // The neighbouring rings are 0.5 away along y: t = +-0.5 moves the loop a quarter.
+    auto axis = r.begin_slide(mid[0], mid[1]);
+    REQUIRE(axis.is_ok());
+    CHECK(r.sliding());
+    CHECK_NEAR(std::abs(axis.value().y), 0.5, 0.02);
+    const float up = axis.value().y > 0 ? 1.0f : -1.0f;
+    r.update_slide(0.5f);
+    for (Index v : mid) CHECK_NEAR(r.mesh().positions[v].y, 0.25f * up, 0.01);
+    r.update_slide(-0.5f);
+    for (Index v : mid) CHECK_NEAR(r.mesh().positions[v].y, -0.25f * up, 0.01);
+    r.update_slide(0.0f);
+    for (Index v : mid) CHECK(distance(r.mesh().positions[v], before[v]) < 1e-4f);
+    r.update_slide(0.5f);
+    r.end_slide();
+    CHECK(!r.sliding());
+    CHECK(max_gap(r, ref) < 1e-4);
+    for (Index v : rings[1]) CHECK(r.mesh().positions[v] == before[v]);  // only the loop moves
+
+    // One undo step for the whole slide.
+    REQUIRE(r.undo());
+    CHECK(r.mesh().positions == before);
+    REQUIRE(r.redo());
+    for (Index v : mid) CHECK_NEAR(r.mesh().positions[v].y, 0.25f * up, 0.01);
+    REQUIRE(r.undo());
+
+    // An open loop along the tube runs from border to border; its ends slide along the borders.
+    auto rail = r.edge_loop(rings[1][0], rings[2][0]);
+    REQUIRE(rail.is_ok());
+    CHECK(!rail.value().closed);
+    CHECK_EQ(rail.value().vertices.size(), 5u);
+    CHECK_EQ(rail.value().vertices.front(), rings[0][0]);
+    CHECK_EQ(rail.value().vertices.back(), rings[4][0]);
+    REQUIRE(r.slide_loop(rings[1][0], rings[2][0], 0.3f).is_ok());
+    for (Index v : rail.value().vertices) CHECK(distance(r.mesh().positions[v], before[v]) > 0.05f);
+    // (contours sit where the stroke snapped, so the end rings are near y = -0.96)
+    const float end_y = before[rings[0][0]].y, next_y = before[rings[1][0]].y;
+    CHECK_NEAR(r.mesh().positions[rings[0][0]].y, end_y, 0.05);  // slides along its border ring
+    CHECK(max_gap(r, ref) < 1e-4);
+    CHECK_EQ(r.stats().boundary_edges, 16u);
+    REQUIRE(r.undo());
+
+    // A border loop has faces on one side only: the axis points toward them
+    // either way, and sliding the other way leaves the loop put.
+    auto end_loop = r.edge_loop(rings[0][0], rings[0][1]);
+    REQUIRE(end_loop.is_ok());
+    CHECK(end_loop.value().closed);
+    CHECK_EQ(end_loop.value().vertices.size(), 8u);
+    auto end_axis = r.begin_slide(rings[0][0], rings[0][1]);
+    REQUIRE(end_axis.is_ok());
+    CHECK_NEAR(end_axis.value().y * (end_axis.value().y > 0 ? 1.0f : -1.0f), next_y - end_y, 0.02);
+    const float inward = end_axis.value().y > 0 ? 0.5f : -0.5f;
+    r.update_slide(-inward);
+    for (Index v : rings[0]) CHECK(distance(r.mesh().positions[v], before[v]) < 1e-4f);
+    r.update_slide(inward);
+    for (Index v : rings[0]) CHECK_NEAR(r.mesh().positions[v].y, 0.5f * (end_y + next_y), 0.02);
+    r.end_slide();
+
+    CHECK(!r.begin_slide(mid[0], mid[0]).is_ok());
+    CHECK(!r.begin_slide(mid[0], mid[4]).is_ok());  // not an edge
+}
+
+TEST(edge_loops_stop_at_poles) {
+    // Level 1 cube sphere: 2x2 quads per cube face; the cube corners are valence-3 poles.
+    const Mesh sphere = make_quad_sphere(4, 1.0f);
+    RetopoMesh r(sphere, make_quad_sphere(1, 1.0f));
+    const VertexAdjacency adj = VertexAdjacency::build(r.mesh());
+    Index corner = kInvalidIndex, centre = kInvalidIndex;
+    for (Index v = 0; v < r.mesh().vertex_count(); ++v) {
+        if (adj.of(v).size() == 3 && corner == kInvalidIndex) corner = v;
+    }
+    REQUIRE(corner != kInvalidIndex);
+    const Index edge_mid = adj.of(corner)[0];
+    auto open = r.edge_loop(corner, edge_mid);
+    REQUIRE(open.is_ok());
+    CHECK(!open.value().closed);
+    REQUIRE(open.value().vertices.size() == 3u);  // corner, edge midpoint, next corner
+    CHECK_EQ(adj.of(open.value().vertices[2]).size(), 3u);
+    // From an edge midpoint toward a face centre, the loop goes round the cube.
+    for (Index v : adj.of(edge_mid)) {
+        if (v != corner && adj.of(v).size() == 4) centre = v;
+    }
+    REQUIRE(centre != kInvalidIndex);
+    auto round = r.edge_loop(edge_mid, centre);
+    REQUIRE(round.is_ok());
+    CHECK(round.value().closed);
+    CHECK_EQ(round.value().vertices.size(), 8u);
+    REQUIRE(r.slide_loop(edge_mid, centre, 0.4f).is_ok());
+    CHECK(max_gap(r, sphere) < 1e-4);
+    CHECK_EQ(r.stats().quads, 24u);
+}
+
+TEST(retopology_undo_history) {
+    RetopoMesh r(capsule());
+    CHECK(!r.can_undo());
+    capsule_tube(r);
+    const RetopoStats tube = r.stats();
+    CHECK_EQ(tube.quads, 32u);
+    const auto [a, b] = r.nearest_edge({0.0f, -0.25f, 0.5f});
+    REQUIRE(r.insert_loop(a, b).is_ok());
+    CHECK_EQ(r.stats().quads, 40u);
+    REQUIRE(r.undo());
+    CHECK_EQ(r.stats().quads, 32u);
+    CHECK(r.can_redo());
+    REQUIRE(r.redo());
+    CHECK_EQ(r.stats().quads, 40u);
+    REQUIRE(r.undo());
+    r.relax(1);  // a new edit drops the redo branch
+    CHECK(!r.can_redo());
+    for (int i = 0; i < 6; ++i) REQUIRE(r.undo());
+    CHECK_EQ(r.mesh().vertex_count(), 0u);
+    CHECK(!r.undo());
+    // A failed edit leaves no step behind.
+    CHECK(!r.add_quad({Vec3{0, 0, 0.5f}, Vec3{0, 0, 0.5f}, Vec3{0, 0.1f, 0.5f}, Vec3{0, 0.1f, 0.5f}}).is_ok());
+    CHECK(!r.can_undo());
+    CHECK_EQ(r.mesh().vertex_count(), 0u);
+    // The history is capped.
+    r.undo_limit = 2;
+    for (int i = 0; i < 4; ++i) r.relax(1);
+    CHECK(r.undo());
+    CHECK(r.undo());
+    CHECK(!r.undo());
+}
+
+TEST(c_api_slide_loop_and_undo) {
+    CruthDocument* doc = nullptr;
+    REQUIRE(cruth_document_create_sphere(4, 1.0f, &doc) == CRUTH_OK);
+    CruthRetopo* retopo = nullptr;
+    REQUIRE(cruth_retopo_begin(doc, &retopo) == CRUTH_OK);
+    uint32_t a = 0, b = 0;
+    CHECK(!cruth_retopo_nearest_edge(retopo, {0, 0, 1}, &a, &b));
+    for (int i = 0; i < 3; ++i) {
+        const float y = -0.3f + 0.3f * float(i);
+        const CruthVec3 stroke[2] = {{-1.2f, y, 0.5f}, {1.2f, y, 0.5f}};
+        REQUIRE(cruth_retopo_add_contour(retopo, stroke, 2, 10, {0, 0, -1}) == CRUTH_OK);
+    }
+    CHECK(cruth_retopo_can_undo(retopo));
+    // The middle ring: its edge nearest a point on it.
+    REQUIRE(cruth_retopo_nearest_edge(retopo, {0.0f, 0.0f, 1.0f}, &a, &b));
+    std::vector<float> before(cruth_retopo_copy_edges(retopo, nullptr, 0) * 6);
+    cruth_retopo_copy_edges(retopo, before.data(), before.size());
+    CruthVec3 axis{};
+    REQUIRE(cruth_retopo_slide_loop_begin(retopo, a, b, &axis) == CRUTH_OK);
+    CHECK(std::abs(axis.y) > 0.2f);
+    cruth_retopo_slide_loop_update(retopo, 0.5f);
+    cruth_retopo_slide_loop_end(retopo);
+    std::vector<float> after(before.size());
+    cruth_retopo_copy_edges(retopo, after.data(), after.size());
+    CHECK(after != before);
+    CHECK(cruth_retopo_undo(retopo));
+    cruth_retopo_copy_edges(retopo, after.data(), after.size());
+    CHECK(after == before);
+    CHECK(cruth_retopo_can_redo(retopo));
+    CHECK(cruth_retopo_redo(retopo));
+    CHECK(cruth_retopo_slide_loop(retopo, a, b, -0.25f) == CRUTH_OK);
+    CHECK(cruth_retopo_slide_loop(retopo, a, a, 0.5f) == CRUTH_ERROR_INVALID_ARGUMENT);
+    CHECK(cruth_retopo_slide_loop_begin(nullptr, a, b, nullptr) == CRUTH_ERROR_INVALID_ARGUMENT);
+    CHECK(!cruth_retopo_undo(nullptr));
+    cruth_retopo_destroy(retopo);
+    cruth_document_destroy(doc);
+}
