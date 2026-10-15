@@ -21,8 +21,13 @@
 
 namespace cruth {
 
+// Tangent frames are MikkTSpace (cruth/tangents.hpp). Decode rules:
+//  - TangentNormal: the engine's pixel shader, with the unnormalised interpolated tangent vT and
+//    vertex normal vN, vB = sign * cross(vN, vT): normalize(tn.x * vT + tn.y * vB + tn.z * vN).
+//  - VectorDisplacement: an orthonormal unit frame, n = normalize(vN), T = normalize(vT - n (n . vT)),
+//    B = sign * cross(n, T): offset = d.x * T + d.y * B + d.z * n.
 enum class BakeMap {
-    TangentNormal,       // RGB, tangent space, OpenGL (+Y) convention, 0.5-biased
+    TangentNormal,      // RGB, tangent space, OpenGL (+Y) convention, 0.5-biased
     ObjectNormal,        // RGB, object space, 0.5-biased
     Height,              // 1 channel, signed distance along the low normal (object units)
     VectorDisplacement,  // RGB, tangent-space offset low -> high (object units)

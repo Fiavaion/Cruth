@@ -284,7 +284,7 @@ int main(int argc, char** argv) {
     r.fact("bake_misses", bs.misses);
 
     // 6. Write the asset as a DCC would load it.
-    (void)save_mesh(low, out_dir + "/head_low.obj", &uv.value());
+    (void)write_file_bytes(out_dir + "/head_low.obj", write_baked_asset_obj(low, uv.value()));
     std::vector<const Image*> height_tiles(2, nullptr);
     for (const auto& m : baked.value()) {
         const std::string tile = std::to_string(1001 + m.tile);
