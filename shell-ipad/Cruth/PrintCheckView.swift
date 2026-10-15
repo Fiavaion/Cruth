@@ -16,6 +16,7 @@ struct PrintCheckView: View {
                               systemImage: r.printable ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                             .foregroundStyle(r.printable ? Color.green : Color.orange)
                             .font(.headline)
+                            .accessibilityIdentifier("printStatus")
                     }
                     Section("Mesh") {
                         row("Vertices", r.vertices)
@@ -47,6 +48,7 @@ struct PrintCheckView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
+                        .accessibilityIdentifier("printCheckDone")
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Repair") { repair() }
@@ -72,6 +74,7 @@ struct PrintCheckView: View {
         LabeledContent(title) {
             Text(value.formatted())
                 .monospacedDigit()
+                .accessibilityIdentifier("printCheck.\(title)")
                 .foregroundStyle(value == 0 || !isProblem(title) ? Color.secondary : Color.orange)
         }
     }

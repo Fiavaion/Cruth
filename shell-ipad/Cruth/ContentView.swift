@@ -12,6 +12,7 @@ struct ContentView: View {
         ZStack {
             ViewportView(session: session)
                 .ignoresSafeArea()
+                .accessibilityIdentifier("viewport")
 
             HStack(alignment: .center) {
                 if leftHanded {
@@ -37,6 +38,7 @@ struct ContentView: View {
                 ProgressView(session.busyLabel)
                     .padding(20)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    .accessibilityIdentifier("busyIndicator")
             }
         }
         .fileImporter(isPresented: $importing,
@@ -91,12 +93,14 @@ struct ContentView: View {
             .pickerStyle(.segmented)
             .frame(width: 240)
             .disabled(session.isBusy)
+            .accessibilityIdentifier("modePicker")
 
             Spacer()
 
             topologyMenu
             levelStepper
             Button { showPrintCheck = true } label: { Label("Print Check", systemImage: "printer") }
+                .accessibilityIdentifier("printCheckButton")
             Menu {
                 Button("Clear Mask") { session.clearMask() }
                 Button("Invert Mask") { session.invertMask() }
@@ -109,9 +113,11 @@ struct ContentView: View {
             Button { session.undo() } label: { Image(systemName: "arrow.uturn.backward") }
                 .disabled(!session.canUndo)
                 .keyboardShortcut("z", modifiers: .command)
+                .accessibilityIdentifier("undoButton")
             Button { session.redo() } label: { Image(systemName: "arrow.uturn.forward") }
                 .disabled(!session.canRedo)
                 .keyboardShortcut("z", modifiers: [.command, .shift])
+                .accessibilityIdentifier("redoButton")
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.bordered)
@@ -154,6 +160,7 @@ struct ContentView: View {
         } label: {
             Label("Topology", systemImage: "square.grid.3x3")
         }
+        .accessibilityIdentifier("topologyMenu")
     }
 
     private var levelStepper: some View {
@@ -174,9 +181,11 @@ struct ContentView: View {
         HStack {
             Text("\(session.vertexCount.formatted()) vertices · \(session.triangleCount.formatted()) triangles")
                 .monospacedDigit()
+                .accessibilityIdentifier("statusCounts")
             if let message = session.message {
                 Text("·")
                 Text(message).lineLimit(1)
+                    .accessibilityIdentifier("statusMessage")
                 Button { session.message = nil } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.plain)
             }
@@ -229,6 +238,7 @@ struct BrushSettingsPanel: View {
             Toggle("Mirror X", isOn: $session.symmetryX)
             Toggle("Pressure → Size", isOn: $session.pressureSize)
             Toggle("Finger Sculpting", isOn: $session.fingerSculpting)
+                .accessibilityIdentifier("fingerSculptingToggle")
         }
         .toggleStyle(.switch)
         .font(.subheadline)
@@ -302,8 +312,10 @@ struct GuidesPanel: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Text("\(session.guideStrokes.count) strokes").monospacedDigit()
+                .accessibilityIdentifier("guideCount")
             Button("Clear Guides", role: .destructive) { session.clearGuides() }
                 .disabled(session.guideStrokes.isEmpty)
+                .accessibilityIdentifier("clearGuidesButton")
         }
         .font(.subheadline)
         .frame(width: 220, alignment: .leading)
@@ -323,6 +335,7 @@ struct RetopoPanel: View {
                 ForEach(RetopoTool.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
+            .accessibilityIdentifier("retopoToolPicker")
             switch session.retopoTool {
             case .contour:
                 Text("Stroke across a form to add an edge loop.").font(.footnote).foregroundStyle(.secondary)
@@ -339,12 +352,15 @@ struct RetopoPanel: View {
             Text("\(s.quads) quads · \(s.triangles + s.ngons) other · \(s.poles) poles")
                 .font(.footnote)
                 .monospacedDigit()
+                .accessibilityIdentifier("retopoStats")
             HStack {
                 Button("Relax") { session.relaxRetopo() }
                 Spacer()
                 Button("Cancel", role: .cancel) { session.cancelRetopo() }
+                    .accessibilityIdentifier("cancelRetopoButton")
                 Button("Apply") { session.applyRetopo() }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("applyRetopoButton")
             }
             Toggle("Keep Sculpt Detail", isOn: $session.keepDetail)
         }

@@ -4,12 +4,15 @@
 #   ./scripts/ipad.sh generate   regenerate shell-ipad/Cruth.xcodeproj from project.yml
 #   ./scripts/ipad.sh build      build for the iPad simulator
 #   ./scripts/ipad.sh run        build, boot an iPad simulator, install and launch (logs stream here)
+#   ./scripts/ipad.sh test       run the UI smoke tests (CruthUITests) in the simulator; extra arguments
+#                                go to xcodebuild, e.g. -only-testing:CruthUITests/CruthUITests/testQuadRemeshAndUndo
 #   ./scripts/ipad.sh device     build, install and launch on a connected iPad (needs signing, see docs/SETUP.md)
 #   ./scripts/ipad.sh open       open the project in Xcode
 #   ./scripts/ipad.sh clean      delete the app build products
 #
 # Environment: CRUTH_SIMULATOR picks a simulator by name (default: the first
 # available iPad); CRUTH_DEVICE picks a device by name or identifier.
+# The test result bundle lands in build/ipad/UITests.xcresult.
 # SPDX-License-Identifier: MIT
 set -euo pipefail
 
@@ -73,6 +76,15 @@ case "${1:-help}" in
     echo "launching $(bundle_id) (Ctrl-C stops log streaming; the app keeps running)"
     xcrun simctl launch --console-pty "$id" "$(bundle_id)"
     ;;
+  test)
+    shift
+    generate
+    id="$(simulator_id)"
+    xcrun simctl bootstatus "$id" -b >/dev/null
+    rm -rf "$derived/UITests.xcresult"
+    xcb -configuration Debug -destination "id=$id" -resultBundlePath "$derived/UITests.xcresult" \
+      CODE_SIGNING_ALLOWED=NO test ${1+"$@"}
+    ;;
   device)
     generate
     xcb -configuration Debug -destination 'generic/platform=iOS' -allowProvisioningUpdates build
@@ -88,5 +100,5 @@ case "${1:-help}" in
     ;;
   open) generate; open "$shell/Cruth.xcodeproj" ;;
   clean) rm -rf "$derived"; echo "removed $derived" ;;
-  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
