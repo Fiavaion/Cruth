@@ -162,7 +162,7 @@ final class CruthUITests: XCTestCase {
         for (i, corner) in corners.enumerated() {
             tap(corner)
             if i < 3 {
-                waitFor(pending, "label BEGINSWITH %@", "\(i + 1) taps", timeout: 10,
+                waitFor(pending, "label BEGINSWITH %@", i == 0 ? "1 tap " : "\(i + 1) taps", timeout: 10,
                         "tap \(i + 1) was not recorded (message: \(statusMessage()))")
             }
         }

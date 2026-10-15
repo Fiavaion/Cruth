@@ -358,7 +358,8 @@ struct RetopoPanel: View {
                 Text("Tap four corners for a quad; every two more taps add the next one.")
                     .font(.footnote).foregroundStyle(.secondary)
                 HStack {
-                    Text("\(session.quadPenPending.count) taps pending").monospacedDigit()
+                    let pending = session.quadPenPending.count
+                    Text(pending == 1 ? "1 tap pending" : "\(pending) taps pending").monospacedDigit()
                         .accessibilityIdentifier("quadPenPending")
                     Spacer()
                     Button("Lift") { session.liftQuadPen() }
@@ -410,6 +411,7 @@ struct RetopoPanel: View {
                     Text(tool.title)
                         .font(.footnote.weight(selected ? .semibold : .regular))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.6)  // shrink rather than truncate at large Dynamic Type
                         .frame(maxWidth: .infinity, minHeight: 36)
                         .background(selected ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.12),
                                     in: RoundedRectangle(cornerRadius: 8))
