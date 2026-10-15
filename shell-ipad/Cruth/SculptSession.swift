@@ -657,7 +657,7 @@ final class SculptSession: ObservableObject {
     /// rather than being cleared early by the earlier one's timer.
     private var flashToken = 0
 
-    private func flash(_ text: String) {
+    func flash(_ text: String) {
         message = text
         flashToken += 1
         let token = flashToken

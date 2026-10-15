@@ -51,6 +51,9 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     private var slide: (axis: SIMD3<Float>, plane: (point: SIMD3<Float>, normal: SIMD3<Float>))?
     /// Screen distance, in points, a touch may move and still count as a tap.
     private static let tapSlop: CGFloat = 10
+    /// Screen distance, in points, from the touch to the edge Insert Loop or
+    /// Slide Loop would pick, beyond which the touch picks nothing.
+    private static let edgePickRadius: CGFloat = 30
 
     init(session: SculptSession) {
         self.session = session
@@ -396,7 +399,12 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
             } else if commit, !touchTravelled, let hit = touchOrigin?.hit {
                 switch tool {
                 case .quadPen: session.quadPenTap(at: hit)
-                case .insertLoop: session.insertLoop(near: hit)
+                case .insertLoop:
+                    if let origin = touchOrigin, edgeIsNear(hit, on: origin.location) {
+                        session.insertLoop(near: hit)
+                    } else {
+                        session.flash("Tap closer to an edge")
+                    }
                 default: break
                 }
             }
@@ -431,10 +439,14 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         let location = touch.location(in: self)
         if !touchTravelled, hypot(location.x - origin.location.x, location.y - origin.location.y) > Self.tapSlop {
             touchTravelled = true
-            if touchTool == .slideLoop, let hit = origin.hit, let axis = session.beginSlideLoop(near: hit) {
-                // Like the grab brush: drag on a plane facing the camera through
-                // the start point, because the surface under the finger moves.
-                slide = (axis, (hit, -renderer.camera.forward))
+            if touchTool == .slideLoop, let hit = origin.hit {
+                if !edgeIsNear(hit, on: origin.location) {
+                    session.flash("Start the drag closer to an edge")
+                } else if let axis = session.beginSlideLoop(near: hit) {
+                    // Like the grab brush: drag on a plane facing the camera through
+                    // the start point, because the surface under the finger moves.
+                    slide = (axis, (hit, -renderer.camera.forward))
+                }
             }
         }
         guard let slide else { return }
@@ -445,6 +457,33 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         let drag = ray.origin + ray.direction * (simd_dot(slide.plane.point - ray.origin, slide.plane.normal) / denom)
             - slide.plane.point
         session.updateSlideLoop(simd_dot(drag, slide.axis) / axisSquared)
+    }
+
+    /// Whether the cage edge the core picks for hit (the nearest in 3D, as in
+    /// cruth_retopo_nearest_edge) lies within edgePickRadius of location on
+    /// screen. With no cage it says yes, so the session can explain instead.
+    private func edgeIsNear(_ hit: SIMD3<Float>, on location: CGPoint) -> Bool {
+        guard let renderer else { return false }
+        let edges = session.retopoEdges
+        var nearest: (a: SIMD3<Float>, b: SIMD3<Float>)?
+        var nearestDistance = Float.greatestFiniteMagnitude
+        for i in stride(from: 0, to: edges.count - 1, by: 2) {
+            let a = edges[i], ab = edges[i + 1] - a
+            let t = simd_clamp(simd_dot(hit - a, ab) / max(simd_length_squared(ab), 1e-20), 0, 1)
+            let d = simd_distance_squared(a + ab * t, hit)
+            if d < nearestDistance {
+                nearestDistance = d
+                nearest = (a, edges[i + 1])
+            }
+        }
+        guard let nearest else { return true }
+        guard let a = renderer.camera.project(nearest.a, viewSize: bounds.size),
+              let b = renderer.camera.project(nearest.b, viewSize: bounds.size) else { return false }
+        let ab = CGPoint(x: b.x - a.x, y: b.y - a.y)
+        let lengthSquared = ab.x * ab.x + ab.y * ab.y
+        let t = lengthSquared > 0
+            ? min(max(((location.x - a.x) * ab.x + (location.y - a.y) * ab.y) / lengthSquared, 0), 1) : 0
+        return hypot(a.x + ab.x * t - location.x, a.y + ab.y * t - location.y) <= Self.edgePickRadius
     }
 
     private func addSamples(for touch: UITouch, event: UIEvent?) {
