@@ -56,6 +56,11 @@ struct UnwrapStats {
     float utilisation = 0;       // chart area / tile area, averaged over tiles
     std::vector<float> tile_utilisation;  // chart area / tile area, per tile
     float max_stretch = 0;       // worst per-face area ratio (uv / 3D, normalised)
+    // Texel padding on each side of a chart at `resolution`, as packed. Below
+    // padding_texels (and padding_met false) when too many charts share a row
+    // for the requested padding to fit the resolution.
+    float padding_texels = 0;
+    bool padding_met = true;
 };
 
 // Seam groups from painted seam edges (PRD U-02): faces connected across

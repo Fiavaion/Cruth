@@ -430,3 +430,21 @@ TEST(uv_queries_ignore_a_mismatched_uv_set) {
     CHECK_EQ(count_flipped_uv_faces(sphere, r.value()), 0u);
     CHECK(uv_area_distortion(sphere, r.value()) == std::vector<float>(sphere.face_count(), 0.0f));
 }
+
+// 1,536 charts at 64 texels cannot keep 4 texels each side (about 40 charts
+// a row would need 320 texels of gaps); the unwrap says so instead of
+// silently shrinking the padding.
+TEST(unwrap_reports_unmet_padding) {
+    const Mesh m = make_quad_sphere(4, 1.0f);
+    UnwrapOptions o = per_face_groups(m);
+    o.resolution = 64;
+    UnwrapStats stats;
+    REQUIRE(auto_unwrap(m, o, &stats).is_ok());
+    CHECK(!stats.padding_met);
+    CHECK(stats.padding_texels > 0 && stats.padding_texels < float(o.padding_texels));
+
+    UnwrapStats ok;
+    REQUIRE(auto_unwrap(make_quad_sphere(4, 1.0f), {}, &ok).is_ok());
+    CHECK(ok.padding_met);
+    CHECK(ok.padding_texels >= float(UnwrapOptions{}.padding_texels) * 0.999f);
+}

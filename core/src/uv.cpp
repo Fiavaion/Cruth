@@ -675,14 +675,14 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options, Unwrap
     const TilePacker packer = most_charts > kMaxRectsChartLimit ? pack_tile_skyline : pack_tile_maxrects;
     int key = 0;
     float side = pack_tiles(per_tile, 0.0f, packer, key);
-    for (int pass = 0; pass < 6; ++pass) {
+    float pad = 0;
+    bool padding_met = false;
+    for (int pass = 0; pass < 6 && !padding_met; ++pass) {
         const float pad_fraction = float(options.padding_texels) * 2.0f / float(resolution);
-        const float pad = pad_fraction * side * (pass < 5 ? 1.02f : 1.1f);
+        pad = pad_fraction * side * (pass < 5 ? 1.02f : 1.1f);
         key = -1;
-        const float packed = pack_tiles(per_tile, pad, packer, key);
-        const bool holds = pad >= pad_fraction * packed;
-        side = packed;
-        if (holds) break;
+        side = pack_tiles(per_tile, pad, packer, key);
+        padding_met = pad >= pad_fraction * side;
     }
     apply_turns(charts);
     const float scale = side > 0 ? 1.0f / side : 1.0f;  // uv units per world unit, shared by all tiles
@@ -723,6 +723,8 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options, Unwrap
             if (d > 0) worst = std::max(worst, std::max(d, 1.0f / d));
         }
         stats->max_stretch = worst;
+        stats->padding_texels = 0.5f * pad * scale * float(resolution);  // pad is the gap between two charts
+        stats->padding_met = padding_met;
     }
     return out;
 }
