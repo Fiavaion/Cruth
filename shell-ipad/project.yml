@@ -1,0 +1,40 @@
+# XcodeGen spec for the iPad shell. Generate the project with:
+#   brew install xcodegen && cd shell-ipad && xcodegen generate && open Cruth.xcodeproj
+# The C++ core is compiled straight into the app target from ../core, so there
+# is no separate library build step.
+name: Cruth
+options:
+  bundleIdPrefix: org.cruth
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CLANG_CXX_LANGUAGE_STANDARD: c++20
+    CLANG_CXX_LIBRARY: libc++
+    GCC_C_LANGUAGE_STANDARD: c11
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  Cruth:
+    type: application
+    platform: iOS
+    sources:
+      - path: Cruth
+      - path: ../core/src
+        group: Core
+      - path: ../core/include
+        group: Core
+        buildPhase: none
+    settings:
+      base:
+        PRODUCT_NAME: Cruth
+        PRODUCT_BUNDLE_IDENTIFIER: org.cruth.app
+        TARGETED_DEVICE_FAMILY: "2"
+        INFOPLIST_FILE: Cruth/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: Cruth/Cruth-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/../core/include
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO

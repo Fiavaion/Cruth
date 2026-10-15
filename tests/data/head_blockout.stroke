@@ -1,0 +1,42 @@
+# Rough head blockout on a unit quad sphere, replayed by `cruth-cli sculpt`.
+# Brow ridge with X symmetry.
+brush clay radius 0.25 strength 0.8 symmetry x
+stroke
+p 0.05 0.35 0.93
+p 0.20 0.38 0.90
+p 0.35 0.36 0.86
+end
+
+# Nose.
+brush standard radius 0.18 strength 1 symmetry x
+stroke
+p 0.0 0.15 0.99 0.6
+p 0.0 0.05 1.00 0.9
+p 0.0 -0.05 1.00 1.0
+end
+
+# Eye sockets.
+brush standard radius 0.15 strength 0.8 invert symmetry x
+stroke
+p 0.22 0.22 0.95
+p 0.26 0.22 0.94
+end
+
+# Jaw pulled down.
+brush grab radius 0.5 strength 0.5 symmetry x
+stroke
+p 0.0 -0.8 0.6
+p 0.0 -0.9 0.62
+p 0.0 -1.0 0.64
+end
+
+# Tidy.
+brush smooth radius 0.3 strength 0.5 symmetry x
+stroke
+p 0.0 -0.6 0.8
+p 0.2 -0.5 0.84
+end
+
+# Try the undo stack: drop the last smooth pass and put it back.
+undo
+redo

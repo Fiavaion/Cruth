@@ -1,1 +1,84 @@
 # Cruth
+
+A free, open-source iPad sculpting app that takes a model from first blob to a game- or render-ready asset (sculpt, remesh, retopologise, unwrap and bake) on one device, in open formats, with no account and no subscription.
+
+- Product requirements: [docs/PRD.md](docs/PRD.md)
+- Competitor research and stack rationale: [docs/Research.md](docs/Research.md)
+- What is built and what comes next: [docs/ROADMAP.md](docs/ROADMAP.md)
+
+## Status: phase 0
+
+The PRD's phase 0 is to prove the C++ core headless before the UI grows. This repository currently contains:
+
+| Area | What works today |
+| --- | --- |
+| Mesh kernel | Indexed polygon mesh; half-edge connectivity that rejects non-manifold input cleanly (S-01) |
+| Subdivision | Catmull-Clark with smooth boundary rules; quad-sphere, cube and plane primitives |
+| Brushes | Standard, Clay, Inflate, Smooth, Flatten, Pinch, Crease, Grab and Mask, with falloff curves, pressure curves, dab spacing, X/Y/Z mirror and radial symmetry (B-01, B-02, B-04, N-02, N-03) |
+| Undo | Exact per-stroke deltas plus whole-mesh steps for topology changes (L-04, linear for now) |
+| Files | OBJ, STL (ASCII and binary) and PLY (ASCII and binary) import and export (P-06, P-07) |
+| 3D-print | Check for holes, non-manifold edges and vertices, winding, degenerate faces, shells, volume and size; repair by welding, re-winding, filling holes and turning shells outward (X-01, X-02) |
+| C API | `core/include/cruth/cruth.h`: the exception-free boundary every shell uses |
+| CLI | `cruth-cli`: create, sculpt from a stroke script, subdivide, check, repair and convert, all headless |
+| iPad shell | SwiftUI and Metal viewport; raw Apple Pencil input with pressure and coalesced touches; finger orbit, pan and zoom; two- and three-finger tap for undo and redo; Pencil double-tap and squeeze; hover brush cursor; Files import and export; print check sheet |
+
+## Repository layout
+
+```
+core/            C++20 geometry core (MIT). No platform code, no third-party dependencies yet.
+  include/cruth/   Public headers; cruth.h is the C API for the shells.
+  src/
+tools/cruth-cli/ Headless command-line driver for the core.
+tests/           Core unit tests and the CLI end-to-end chain (ctest).
+shell-ipad/      SwiftUI + Metal iPad app (XcodeGen project spec).
+shell-desktop/   Placeholder for the Dear ImGui desktop shell (PRD decision).
+spec/            Open project-format spec and the dependency allow-list.
+docs/            PRD, research and roadmap.
+```
+
+## Build the core and run the tests
+
+You need CMake 3.21 or newer and a C++20 compiler (Clang 15+, GCC 12+ or Apple Clang from Xcode 15+), on macOS or Linux.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+Options: `-DCRUTH_SANITIZE=ON` for ASan and UBSan, and `-DCRUTH_WARNINGS_AS_ERRORS=ON` as CI uses.
+
+### Try the CLI
+
+```sh
+./build/tools/cruth-cli/cruth-cli new sphere base.obj --levels 5
+./build/tools/cruth-cli/cruth-cli sculpt base.obj tests/data/head_blockout.stroke head.obj
+./build/tools/cruth-cli/cruth-cli subdivide head.obj head_smooth.obj
+./build/tools/cruth-cli/cruth-cli check head_smooth.obj
+./build/tools/cruth-cli/cruth-cli convert head_smooth.obj head.stl
+```
+
+Run `cruth-cli` with no arguments for the stroke-script syntax.
+
+## Build the iPad app
+
+The iPad shell needs a Mac with Xcode 26 (iPadOS 26 SDK). The Xcode project is generated from `shell-ipad/project.yml`, so it never conflicts in git.
+
+```sh
+brew install xcodegen
+cd shell-ipad
+xcodegen generate
+open Cruth.xcodeproj
+```
+
+Select an iPad simulator or a connected iPad, set your signing team under *Signing & Capabilities*, and run. The core's C++ sources are compiled directly into the app target.
+
+**Controls:** draw with Apple Pencil to sculpt. One finger orbits, two fingers pan and pinch to zoom. Tap with two fingers to undo and three fingers to redo. Double-tap the Pencil to toggle invert; squeeze a Pencil Pro to toggle Smooth. Turn on *Finger Sculpting* in the brush panel to sculpt with a finger, for example in the simulator.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Contributions are MIT-licensed and signed off with the [DCO](https://developercertificate.org/) (`git commit -s`); there is no CLA.
+
+## Licence
+
+[MIT](LICENSE).

@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Core (${{ matrix.os }}, ${{ matrix.config }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            config: Release
+            flags: ""
+          - os: ubuntu-latest
+            config: Debug
+            flags: -DCRUTH_SANITIZE=ON
+          - os: macos-latest
+            config: Release
+            flags: ""
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.config }} -DCRUTH_WARNINGS_AS_ERRORS=ON ${{ matrix.flags }}
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  ipad-shell:
+    name: iPad shell (simulator build)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: xcodebuild -version
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: shell-ipad
+        run: xcodegen generate
+      - name: Build
+        working-directory: shell-ipad
+        run: |
+          xcodebuild build \
+            -project Cruth.xcodeproj \
+            -scheme Cruth \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO
+
+  licences:
+    name: Licence guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject GPL-family code in the tree
+        run: |
+          # PRD: no GPL dependency anywhere. Fails if a vendored file declares one.
+          if grep -rIlE "SPDX-License-Identifier: *(A?GPL|LGPL)" --exclude-dir=.git --exclude-dir=docs --exclude-dir=.github .; then
+            echo "GPL-family licence found"; exit 1
+          fi
