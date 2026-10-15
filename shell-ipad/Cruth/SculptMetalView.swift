@@ -351,9 +351,15 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
             finishStroke(commit: false)
             return
         }
+        // Fingers that come down together (as a two-finger tap's can, in one
+        // event) are a navigation or undo gesture, never a stroke or tool touch.
+        let fingersDown = event?.allTouches?.filter {
+            $0.type == .direct && $0.phase != .ended && $0.phase != .cancelled
+        }.count ?? 0
         // Only the primary mouse button sculpts; fingers and Pencil carry no buttons.
         guard strokeTouch == nil, (event?.buttonMask ?? []).subtracting(.primary).isEmpty,
-              let touch = touches.first(where: sculpts) else { return }
+              let touch = touches.first(where: { sculpts(with: $0) && !($0.type == .direct && fingersDown > 1) })
+        else { return }
         strokeTouch = touch
         grabPlane = nil
         pathPoints.removeAll()
