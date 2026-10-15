@@ -39,6 +39,7 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     private let hiddenRetopoLayer = CAShapeLayer()
     private let pathLayer = CAShapeLayer()
     private let penLayer = CAShapeLayer()  // pending quad-pen taps
+    private let hiddenPenLayer = CAShapeLayer()  // ones behind the model: hollow, faint, dashed
     private var pathPoints: [SIMD3<Float>] = []
 
     // Retopology tools that take taps or drags rather than strokes: the tool and
@@ -81,6 +82,12 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
             overlay.lineDashPattern = hidden ? [4, 4] : nil
             layer.addSublayer(overlay)
         }
+
+        hiddenPenLayer.fillColor = UIColor.clear.cgColor
+        hiddenPenLayer.strokeColor = UIColor.systemYellow.withAlphaComponent(0.55).cgColor
+        hiddenPenLayer.lineWidth = 1.5
+        hiddenPenLayer.lineDashPattern = [2, 2]
+        layer.addSublayer(hiddenPenLayer)
 
         penLayer.fillColor = UIColor.systemYellow.cgColor
         penLayer.strokeColor = UIColor.black.withAlphaComponent(0.6).cgColor
@@ -168,14 +175,16 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         for i in stride(from: 0, to: edges.count - 1, by: 2) {
             polyline([edges[i], edges[i + 1]], shown: cage, hidden: hiddenCage)
         }
-        let pen = UIBezierPath()
+        let pen = UIBezierPath(), hiddenPen = UIBezierPath()
         for p in session.quadPenPending {
             guard let q = camera.project(p, viewSize: size) else { continue }
-            pen.append(UIBezierPath(ovalIn: CGRect(x: q.x - 5, y: q.y - 5, width: 10, height: 10)))
+            (isVisible(p) ? pen : hiddenPen).append(UIBezierPath(ovalIn: CGRect(x: q.x - 5, y: q.y - 5,
+                                                                                width: 10, height: 10)))
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         penLayer.path = pen.cgPath
+        hiddenPenLayer.path = hiddenPen.cgPath
         guideLayer.path = guides.cgPath
         hiddenGuideLayer.path = hiddenGuides.cgPath
         retopoLayer.path = cage.cgPath
