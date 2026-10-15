@@ -65,7 +65,9 @@ case "${1:-help}" in
   run)
     id="$(build_sim)"
     app="$derived/Build/Products/Debug-iphonesimulator/Cruth.app"
-    xcrun simctl boot "$id" 2>/dev/null || true
+    # Boot and wait until the simulator is ready: installing into a simulator
+    # that is still booting silently loses the app on a cold start.
+    xcrun simctl bootstatus "$id" -b >/dev/null
     open -a Simulator --args -CurrentDeviceUDID "$id"
     xcrun simctl install "$id" "$app"
     echo "launching $(bundle_id) (Ctrl-C stops log streaming; the app keeps running)"
