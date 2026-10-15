@@ -9,9 +9,9 @@
 // 2. parameterisation: least-squares conformal maps (LSCM), solved as the
 //    symmetric conformal energy E_D - A with preconditioned conjugate gradient;
 // 3. packing: each chart scaled to true area, rotated to its tightest box
-//    (rotating calipers), then MaxRects-packed (90 degree turns allowed) with
-//    texel padding into the smallest square that holds them, over one or more
-//    UDIM tiles.
+//    (rotating calipers), then MaxRects-packed (skyline above 500 charts per
+//    tile; 90 degree turns allowed) with texel padding into the smallest square
+//    that holds them, over one or more UDIM tiles.
 // SPDX-License-Identifier: MIT
 #pragma once
 

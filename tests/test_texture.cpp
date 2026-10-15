@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -251,6 +252,13 @@ TEST(game_asset_export_writes_obj_and_maps) {
 
 namespace {
 
+UnwrapOptions per_face_groups(const Mesh& m) {
+    UnwrapOptions o;
+    o.face_groups.resize(m.face_count());
+    for (std::size_t f = 0; f < m.face_count(); ++f) o.face_groups[f] = int(f);
+    return o;
+}
+
 std::vector<int> cell_groups(const Mesh& m, float cell) {
     std::vector<int> g(m.face_count());
     for (std::size_t f = 0; f < m.face_count(); ++f) {
@@ -293,6 +301,8 @@ std::vector<PackCase> pack_cases() {
         o.tiles = 2;
         cases.push_back({"many_charts_two_tiles", std::move(m), o, 0.6239f, 0.64f});
     }
+    cases.push_back({"chart_per_face", make_quad_sphere(4, 1.0f), per_face_groups(make_quad_sphere(4, 1.0f)), 0.5846f,
+                     0.62f});  // 1,536 charts: the skyline packer
     return cases;
 }
 
@@ -387,5 +397,22 @@ TEST(unwrap_degenerate_faces_terminate) {
             CHECK(std::isfinite(t.x) && std::isfinite(t.y));
             CHECK(t.x >= 0 && t.x <= 1 && t.y >= 0 && t.y <= 1);
         }
+    }
+}
+
+// Packing cost must not explode with chart count (it once took 40 s here).
+TEST(unwrap_many_charts_is_fast) {
+    const Mesh m = make_quad_sphere(4, 1.0f);
+    for (int tiles : {1, 4}) {
+        UnwrapOptions o = per_face_groups(m);
+        o.tiles = tiles;
+        UnwrapStats stats;
+        const auto start = std::chrono::steady_clock::now();
+        auto r = auto_unwrap(m, o, &stats);
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        REQUIRE(r.is_ok());
+        CHECK_EQ(stats.charts, m.face_count());
+        CHECK(seconds < 2.0);
+        CHECK(stats.utilisation >= (tiles == 1 ? 0.62f : 0.72f));  // shelf packer: 0.585, 0.702
     }
 }

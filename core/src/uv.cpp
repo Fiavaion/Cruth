@@ -410,10 +410,11 @@ bool contains(const FreeRect& a, const FreeRect& b) {
 }
 
 // Charts are already sorted; returns false when one does not fit.
-bool pack_tile(const std::vector<Chart*>& charts, float side, float pad) {
+bool pack_tile_maxrects(const std::vector<Chart*>& charts, float side, float pad) {
     const float eps = side * 1e-6f;
     std::vector<FreeRect> free_rects{{0, 0, side, side}};
     std::vector<FreeRect> next;
+    std::vector<char> split;  // parallel to next: 1 for pieces cut by this placement
     for (Chart* c : charts) {
         const float w = c->size.x + pad, h = c->size.y + pad;
         float best_short = 3.4e38f, best_long = 3.4e38f;
@@ -439,31 +440,93 @@ bool pack_tile(const std::vector<Chart*>& charts, float side, float pad) {
         c->offset = {placed.x + pad * 0.5f, placed.y + pad * 0.5f};
 
         next.clear();
+        split.clear();
         for (const FreeRect& r : free_rects) {
             if (placed.x >= r.x + r.w || placed.x + placed.w <= r.x || placed.y >= r.y + r.h ||
                 placed.y + placed.h <= r.y) {
                 next.push_back(r);
+                split.push_back(0);
                 continue;
             }
-            if (placed.x > r.x) next.push_back({r.x, r.y, placed.x - r.x, r.h});
-            if (placed.x + placed.w < r.x + r.w) {
-                next.push_back({placed.x + placed.w, r.y, r.x + r.w - placed.x - placed.w, r.h});
-            }
-            if (placed.y > r.y) next.push_back({r.x, r.y, r.w, placed.y - r.y});
-            if (placed.y + placed.h < r.y + r.h) {
-                next.push_back({r.x, placed.y + placed.h, r.w, r.y + r.h - placed.y - placed.h});
-            }
+            auto add = [&](const FreeRect& n) {
+                next.push_back(n);
+                split.push_back(1);
+            };
+            if (placed.x > r.x) add({r.x, r.y, placed.x - r.x, r.h});
+            if (placed.x + placed.w < r.x + r.w) add({placed.x + placed.w, r.y, r.x + r.w - placed.x - placed.w, r.h});
+            if (placed.y > r.y) add({r.x, r.y, r.w, placed.y - r.y});
+            if (placed.y + placed.h < r.y + r.h) add({r.x, placed.y + placed.h, r.w, r.y + r.h - placed.y - placed.h});
         }
+        // Untouched rects were maximal before and lie outside the parents of
+        // the new pieces, so only new pieces can be redundant: O(new * F)
+        // rather than all pairs. Equal rects keep the untouched one, else the first.
         free_rects.clear();
         for (std::size_t i = 0; i < next.size(); ++i) {
             bool redundant = false;
-            for (std::size_t j = 0; j < next.size() && !redundant; ++j) {
-                // Equal rectangles: keep the first.
+            for (std::size_t j = 0; split[i] && j < next.size() && !redundant; ++j) {
                 redundant = i != j && contains(next[j], next[i]) &&
-                            (!contains(next[i], next[j]) || j < i);
+                            (!split[j] || j < i || !contains(next[i], next[j]));
             }
             if (!redundant) free_rects.push_back(next[i]);
         }
+    }
+    return true;
+}
+
+// Skyline bottom-left packing for many charts: each placement costs O(S)
+// over the skyline segments instead of MaxRects' growing free list, for 1-2
+// points of efficiency. Same contract as pack_tile_maxrects.
+struct SkySegment {
+    float x, y, w;
+};
+
+bool pack_tile_skyline(const std::vector<Chart*>& charts, float side, float pad) {
+    const float eps = side * 1e-6f;
+    std::vector<SkySegment> sky{{0, 0, side}};
+    std::vector<SkySegment> next;
+    for (Chart* c : charts) {
+        const float w = c->size.x + pad, h = c->size.y + pad;
+        float best_top = 3.4e38f, best_y = 0;
+        std::size_t best = sky.size();
+        bool best_turn = false;
+        for (std::size_t i = 0; i < sky.size(); ++i) {
+            for (int turn = 0; turn < 2; ++turn) {
+                const float cw = turn ? h : w, ch = turn ? w : h;
+                const float x = sky[i].x;
+                if (x + cw > side + eps) continue;
+                float y = sky[i].y;
+                for (std::size_t j = i + 1; j < sky.size() && sky[j].x < x + cw - eps; ++j) y = std::max(y, sky[j].y);
+                if (y + ch > side + eps) continue;
+                if (y + ch < best_top) {  // lowest top; ties keep the leftmost, unturned
+                    best_top = y + ch;
+                    best_y = y;
+                    best = i;
+                    best_turn = turn != 0;
+                }
+            }
+        }
+        if (best == sky.size()) return false;
+        c->turned = best_turn;
+        const float x = sky[best].x, cw = best_turn ? h : w, ch = best_turn ? w : h;
+        c->offset = {x + pad * 0.5f, best_y + pad * 0.5f};
+
+        // Rebuild: the parts left of the cell, the cell's top, the parts right of it.
+        next.clear();
+        for (const SkySegment& s : sky) {
+            if (s.x < x) next.push_back({s.x, s.y, std::min(s.w, x - s.x)});
+        }
+        next.push_back({x, best_y + ch, cw});
+        for (const SkySegment& s : sky) {
+            const float start = std::max(s.x, x + cw);
+            if (s.x + s.w > start) next.push_back({start, s.y, s.x + s.w - start});
+        }
+        sky.clear();
+        for (const SkySegment& s : next) {
+            if (s.w <= 0) continue;
+            if (!sky.empty() && sky.back().y == s.y) sky.back().w = s.x + s.w - sky.back().x;
+            else sky.push_back(s);
+        }
+        if (sky.empty()) sky.push_back({0, best_top, side});  // side 0: only empty cells fit
     }
     return true;
 }
@@ -478,16 +541,23 @@ void apply_turns(std::vector<Chart>& charts) {
     }
 }
 
-bool pack_all(const std::vector<std::vector<Chart*>>& tiles, float side, float pad) {
+// Above this many charts in a tile MaxRects' free list makes the square
+// search slow (0.6-0.85 s per unwrap at 1,500-1,700 charts against 20-70 ms
+// for the skyline, for 1-2 points of efficiency), so the skyline takes over.
+constexpr std::size_t kMaxRectsChartLimit = 500;
+
+using TilePacker = bool (*)(const std::vector<Chart*>&, float side, float pad);
+
+bool pack_all(const std::vector<std::vector<Chart*>>& tiles, float side, float pad, TilePacker pack) {
     for (const auto& t : tiles) {
-        if (!pack_tile(t, side, pad)) return false;
+        if (!pack(t, side, pad)) return false;
     }
     return true;
 }
 
 // Smallest square (to ~0.3%) that holds every tile's charts at padding `pad`
 // for the current chart order.
-float fit_square(const std::vector<std::vector<Chart*>>& tiles, float pad) {
+float fit_square(const std::vector<std::vector<Chart*>>& tiles, float pad, TilePacker pack) {
     double most_area = 0;
     float longest = 0;
     for (const auto& t : tiles) {
@@ -500,19 +570,19 @@ float fit_square(const std::vector<std::vector<Chart*>>& tiles, float pad) {
         most_area = std::max(most_area, a);
     }
     float lo = std::max(longest, float(std::sqrt(most_area)));  // cannot be smaller
-    if (lo <= 0 && pack_all(tiles, 0.0f, pad)) return 0.0f;      // only empty cells
+    if (lo <= 0 && pack_all(tiles, 0.0f, pad, pack)) return 0.0f;      // only empty cells
     float hi = std::max(lo, 1e-20f);
     // Bounded: once hi >= 2 * n * longest, some empty full-height strip at
     // least `longest` wide survives every placement (n cells cover at most
     // n * longest of the x axis, in at most n + 1 gaps), so every cell fits.
     // 24 steps of 4% then doubling reach that for any chart count.
-    for (int step = 0; step < 200 && !pack_all(tiles, hi, pad); ++step) {
+    for (int step = 0; step < 200 && !pack_all(tiles, hi, pad, pack); ++step) {
         lo = hi;
         hi *= step < 24 ? 1.04f : 2.0f;
     }
     for (int i = 0; i < 12 && hi - lo > hi * 0.003f; ++i) {
         const float mid = 0.5f * (lo + hi);
-        (pack_all(tiles, mid, pad) ? hi : lo) = mid;
+        (pack_all(tiles, mid, pad, pack) ? hi : lo) = mid;
     }
     return hi;
 }
@@ -526,28 +596,35 @@ void sort_tiles(std::vector<std::vector<Chart*>>& tiles, float (*key)(const Char
     }
 }
 
-// Tries a few insertion orders and keeps the tightest; leaves the charts
-// placed at the returned size. Ties keep the earlier order.
-float pack_tiles(std::vector<std::vector<Chart*>>& tiles, float pad) {
-    using Key = float (*)(const Chart&);
-    const Key keys[] = {
-        [](const Chart& c) { return std::max(c.size.x, c.size.y); },
-        [](const Chart& c) { return c.size.x * c.size.y; },
-        [](const Chart& c) { return c.size.x + c.size.y; },
-    };
-    float best = 3.4e38f;
-    std::size_t best_key = 0;
-    for (std::size_t k = 0; k < std::size(keys); ++k) {
-        sort_tiles(tiles, keys[k]);
-        const float side = fit_square(tiles, pad);
-        if (side < best * 0.9999f) {
-            best = side;
-            best_key = k;
+using OrderKey = float (*)(const Chart&);
+constexpr OrderKey kOrderKeys[] = {
+    [](const Chart& c) { return std::max(c.size.x, c.size.y); },
+    [](const Chart& c) { return c.size.x * c.size.y; },
+    [](const Chart& c) { return c.size.x + c.size.y; },
+};
+
+// Packs with insertion order `key`, or when `key` is negative tries every
+// order, keeps the tightest (ties keep the earlier) and stores it in `key`.
+// Leaves the charts placed at the returned size.
+float pack_tiles(std::vector<std::vector<Chart*>>& tiles, float pad, TilePacker pack, int& key) {
+    float side = 3.4e38f;
+    if (key < 0) {
+        key = 0;
+        for (int k = 0; k < int(std::size(kOrderKeys)); ++k) {
+            sort_tiles(tiles, kOrderKeys[k]);
+            const float fitted = fit_square(tiles, pad, pack);
+            if (fitted < side * 0.9999f) {
+                side = fitted;
+                key = k;
+            }
         }
+        sort_tiles(tiles, kOrderKeys[key]);
+    } else {
+        sort_tiles(tiles, kOrderKeys[key]);
+        side = fit_square(tiles, pad, pack);
     }
-    sort_tiles(tiles, keys[best_key]);
-    pack_all(tiles, best, pad);  // earlier probes left other layouts behind
-    return best;
+    pack_all(tiles, side, pad, pack);  // the last probe may have failed or used another order
+    return side;
 }
 
 }  // namespace
@@ -590,11 +667,19 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options, Unwrap
 
     // Padding is in texels, so it depends on the final scale: iterate until
     // the gap (2 * padding_texels, as before) holds at the size we ended up with.
-    float side = pack_tiles(per_tile, 0.0f);
+    // The zero-padding pass only estimates the scale, so it packs in one
+    // order. Padded passes try every order: padding changes the cells'
+    // proportions, and fixing the order early cost up to 1% efficiency.
+    std::size_t most_charts = 0;
+    for (const auto& t : per_tile) most_charts = std::max(most_charts, t.size());
+    const TilePacker packer = most_charts > kMaxRectsChartLimit ? pack_tile_skyline : pack_tile_maxrects;
+    int key = 0;
+    float side = pack_tiles(per_tile, 0.0f, packer, key);
     for (int pass = 0; pass < 6; ++pass) {
         const float pad_fraction = float(options.padding_texels) * 2.0f / float(resolution);
         const float pad = pad_fraction * side * (pass < 5 ? 1.02f : 1.1f);
-        const float packed = pack_tiles(per_tile, pad);
+        key = -1;
+        const float packed = pack_tiles(per_tile, pad, packer, key);
         const bool holds = pad >= pad_fraction * packed;
         side = packed;
         if (holds) break;
