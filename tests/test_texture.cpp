@@ -412,7 +412,11 @@ TEST(unwrap_many_charts_is_fast) {
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         REQUIRE(r.is_ok());
         CHECK_EQ(stats.charts, m.face_count());
-        CHECK(seconds < 2.0);
+#ifdef NDEBUG
+        CHECK(seconds < 2.0);  // optimised builds only: Debug and ASan run many times slower
+#else
+        (void)seconds;
+#endif
         CHECK(stats.utilisation >= (tiles == 1 ? 0.62f : 0.72f));  // shelf packer: 0.585, 0.702
     }
 }
