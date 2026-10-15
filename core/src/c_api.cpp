@@ -81,6 +81,13 @@ cruth::Curve falloff_curve(CruthFalloff f) {
     return cruth::Curve::smooth_falloff();
 }
 
+std::vector<cruth::Vec3> to_points(const CruthVec3* pts, uint32_t count) {
+    std::vector<cruth::Vec3> out;
+    out.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) out.push_back(to_core(pts[i]));
+    return out;
+}
+
 bool valid_brush_type(CruthBrushType t) { return t >= CRUTH_BRUSH_STANDARD && t <= CRUTH_BRUSH_MASK; }
 
 CruthStatus make_document(cruth::Mesh mesh, CruthDocument** out) {
@@ -349,15 +356,6 @@ CruthStatus cruth_retopo_begin(CruthDocument* doc, CruthRetopo** out) {
 }
 
 void cruth_retopo_destroy(CruthRetopo* retopo) { delete retopo; }
-
-namespace {
-std::vector<cruth::Vec3> to_points(const CruthVec3* pts, uint32_t count) {
-    std::vector<cruth::Vec3> out;
-    out.reserve(count);
-    for (uint32_t i = 0; i < count; ++i) out.push_back(to_core(pts[i]));
-    return out;
-}
-}  // namespace
 
 CruthStatus cruth_retopo_add_strip(CruthRetopo* retopo, const CruthVec3* stroke, uint32_t count, float width,
                                    int32_t segments) {
