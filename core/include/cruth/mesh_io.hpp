@@ -24,6 +24,10 @@ Result<Mesh> read_stl(std::string_view bytes);  // detects ASCII vs binary
 Result<Mesh> read_ply(std::string_view bytes);
 
 std::string write_obj(const Mesh& mesh, const UVSet* uvs = nullptr);
+// OBJ for a baked game asset: faces fan-triangulated (0, i, i + 1), as the baker does, and smooth
+// per-vertex normals written as vn (Mesh::vertex_normals()), so an engine's tangent space matches
+// the baked normal map. The UV set must match the mesh.
+std::string write_baked_asset_obj(const Mesh& mesh, const UVSet& uvs);
 std::string write_stl_binary(const Mesh& mesh);  // triangulates polygons
 std::string write_ply_binary(const Mesh& mesh);  // polygons must have <= 255 corners
 

@@ -197,6 +197,27 @@ std::string write_obj(const Mesh& mesh, const UVSet* uvs) {
     return os.str();
 }
 
+std::string write_baked_asset_obj(const Mesh& mesh, const UVSet& uvs) {
+    std::ostringstream os;
+    os << "# Cruth OBJ export (baked asset)\n";
+    os.precision(9);
+    for (const auto& p : mesh.positions) os << "v " << p.x << ' ' << p.y << ' ' << p.z << '\n';
+    for (const auto& t : uvs.uvs) os << "vt " << t.x << ' ' << t.y << '\n';
+    for (const auto& n : mesh.vertex_normals()) os << "vn " << n.x << ' ' << n.y << ' ' << n.z << '\n';
+    for (std::size_t f = 0; f < mesh.face_count(); ++f) {
+        const auto fv = mesh.face(f);
+        const std::size_t base = mesh.face_offsets()[f];
+        for (std::size_t i = 1; i + 1 < fv.size(); ++i) {
+            os << 'f';
+            for (const std::size_t c : {std::size_t(0), i, i + 1}) {
+                os << ' ' << (fv[c] + 1) << '/' << (uvs.corner_uv[base + c] + 1) << '/' << (fv[c] + 1);
+            }
+            os << '\n';
+        }
+    }
+    return os.str();
+}
+
 // ---------------------------------------------------------------- STL
 
 static Result<Mesh> read_stl_ascii(std::string_view text) {

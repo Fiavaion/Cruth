@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 
 #include "cruth/bake.hpp"
 #include "cruth/document.hpp"
@@ -263,6 +265,27 @@ TEST(game_asset_export_writes_obj_and_maps) {
     auto low = load_mesh("./asset_test.obj", &uv);
     REQUIRE(low.is_ok());
     CHECK(uv.matches(low.value()));
+    {
+        // Triangles with vn, so engines see the geometry and normals the bake assumed.
+        std::ifstream in("./asset_test.obj");
+        std::string line;
+        std::size_t vn = 0, faces = 0;
+        bool all_triangles_with_vn = true;
+        while (std::getline(in, line)) {
+            if (line.rfind("vn ", 0) == 0) ++vn;
+            if (line.rfind("f ", 0) == 0) {
+                ++faces;
+                std::istringstream corners(line.substr(2));
+                std::string c;
+                int n = 0;
+                for (; corners >> c; ++n) all_triangles_with_vn &= std::count(c.begin(), c.end(), '/') == 2;
+                all_triangles_with_vn &= n == 3;
+            }
+        }
+        CHECK_EQ(vn, low.value().vertex_count());
+        CHECK_EQ(faces, low.value().triangle_count());
+        CHECK(all_triangles_with_vn);
+    }
     CHECK_EQ(doc.level_count(), 3);  // the document is unchanged
     for (const auto& f : r.value().files) std::remove(f.c_str());
 }
@@ -401,4 +424,22 @@ TEST(bake_tangent_normal_decodes_to_object_normal_like_an_engine) {
         CHECK(max_red > 0.1f);    // the test really tilts along u ...
         CHECK(max_green > 0.1f);  // ... and along v
     }
+}
+
+TEST(baked_asset_obj_triangulates_quads_with_normals) {
+    UVSet uv;
+    const Mesh quad = unit_quad(&uv, false);
+    const std::string text = write_baked_asset_obj(quad, uv);
+    CHECK(text.find("\nf 1/1/1 2/2/2 3/3/3\n") != std::string::npos);
+    CHECK(text.find("\nf 1/1/1 3/3/3 4/4/4\n") != std::string::npos);
+    CHECK(text.find("vn 0 0 1\n") != std::string::npos);
+    UVSet back;
+    auto read = read_obj(text, &back);
+    REQUIRE(read.is_ok());
+    CHECK_EQ(read.value().face_count(), 2u);
+    CHECK(back.matches(read.value()));
+    // Plain OBJ export of a sculpt stays as it was: quads, no normals.
+    const std::string plain = write_obj(quad, &uv);
+    CHECK(plain.find("vn ") == std::string::npos);
+    CHECK(plain.find("f 1/1 2/2 3/3 4/4") != std::string::npos);
 }
