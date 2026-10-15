@@ -30,6 +30,20 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 - [x] Retopology insert loop across quad rings (self-crossing rings split quads in four; non-quad ends absorb the cut, so meshes stay watertight); painted seams that unwrap charts never cross (T-03, U-02 core)
 - [x] Exception-free C API and headless CLI with an end-to-end ctest chain (sculpt → multires → subdivide → remesh → decimate → unwrap → bake → decode)
 - [x] iPad shell with Metal viewport, raw Pencil input, gestures, multires stepper, remesh and decimate menu, Files I/O (I-01, I-02, I-03, I-04, partial)
+- [x] First Mac build: the shell builds and runs on Xcode 26.6 (iPad Pro 13-inch M5 simulator, iOS 26.5) and the core passes ctest on macOS/arm64; device signing tested through `Signing.local.xcconfig`
+
+#### Shell and core slices added since the first Mac build
+
+- [x] Finger sculpting: a finger on the model sculpts, a finger on the background still orbits; a mouse or trackpad sculpts the same way (I-01)
+- [x] "Draw with Finger" toggle in the Guides and Retopo panels
+- [x] Guide and cage overlays are occluded by the model, with a faint dashed pass for the hidden parts
+- [x] XCUITest smoke suite (16 tests) behind `./scripts/ipad.sh test`
+- [x] C++ core optimised in iPad Debug builds: the quad remesh UI test drops from 73 s to 14 s
+- [x] MikkTSpace tangents for tangent-space normal bakes, with the exact inverse on encode; VDM uses an orthonormal unit-frame TBN; both decode rules are documented in `bake.hpp` (K-01, K-02)
+- [x] Game-asset OBJ export is fan-triangulated with `vn`, so it matches the bake
+- [x] UV packing: exact rotating-calipers chart boxes, MaxRects with 90° turns, tightest square tile, skyline packer above 500 charts per tile, texel padding reported in `UnwrapStats` (U-04)
+- [x] Retopology core: quad-pen taps chained into strips, slide loop, closed loop around a feature (`insert_loop_around`), insert loop in the C API, 32-step cage undo history, quad-pen rejection of folded, crossed and repeated quads (T-02, T-03)
+- [x] iPad Retopo tools: Quad Pen, Slide Loop, Insert Loop and Loop Around, finger-driven, with cage undo in Retopo mode (T-02, T-03)
 
 ### Measured (CPU reference, 4-core Linux VM, Release)
 
@@ -42,6 +56,9 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 | Quad remesh to 5k | 197k-triangle head | 4.9 s |
 | Quad remesh to 20k | 197k-triangle head | 24 s (was 134 s before the flow change) |
 | Unwrap | 1.5k-quad sphere, 8 charts | < 0.01 s |
+| Unwrap, many charts | 1,536 charts | 22 ms |
+| UV tile utilisation, acceptance head | before → after the new packer | 0.227 → 0.548 |
+| UV tile utilisation, sphere level 5 | before → after the new packer | 0.385 → 0.626 |
 | Bake normal + height + AO (16 spp) + VDM, 512² | 12k → 98k-quad source | 0.8 s |
 | Acceptance chain, smoke | 197k-triangle head → 4.7k quads, 2 × 1K tiles | 7 s |
 | Acceptance chain, full | 3.1M-triangle head → 19.5k quads, 2 × 4K tiles | 77 s (quad remesh 48 s, bake 16 s) |
@@ -55,20 +72,26 @@ PRD target: 512³ in ≤ 1 s on M4 and ≤ 3 s on A14, through the Metal compute
 - Voxel remesh can leave a non-manifold edge where two sheets pinch along a single edge in a concave crease thinner than a voxel. Seen once, at resolution 40 on two overlapping cubes. Subdividing such a mesh reports `NonManifold`; remeshing at a different resolution clears it.
 - Remesh projection can leave 1–3 self-intersecting triangle pairs at sharp creases at very high resolution.
 - Multires detail is stored in object space, so detail does not rotate with large lower-level edits. Tangent-space detail is needed.
-- Remesh, decimate and subdivide run on the main thread in the iPad shell; only Export Game Asset runs in the background. Background Tasks with Live Activities (R-03) are not wired yet.
-- The iPad overlays for guides and retopology are drawn without occlusion, so strokes behind the model show through.
+- Background Tasks with Live Activities (R-03) are not wired yet.
+- Overlay occlusion is a CPU raycast per refresh, so its cost scales with the cage size.
 - Quad remesh leaves a few dozen folded quad pairs on sharp crease strokes narrower than one quad (47 at 20k on the test head; none on smooth forms). The aggressive-SAT flip repair is compiled out because it needs an external solver.
-- The baker's tangent frame is per triangle, not MikkTSpace, so normal maps can show faint seams in engines that expect MikkTSpace.
-- UV packing is shelf-based on chart bounding boxes: about 35% of a tile is covered on organic shapes. Better packing is P1 (U-04).
-- Face rings on quad-remesh output are helical: a ring started anywhere tends to wind over the whole mesh, so Insert Loop on raw remesh output roughly triples the face count. Guide strokes align the field but do not close the loops around a feature. The acceptance chain therefore uses a snapped relax for its hand-retopology step, and the PRD's "retopo the eye loops by hand" waits on either loop-closing in the remesher or a bounded loop cut between poles.
+- UV packing is box-based, not polygon-aware: charts are packed by their rotated bounding boxes, so concave charts waste space (U-04).
+- VDM decode uses a unit TBN, while the normal map uses the exact MikkTSpace inverse.
+- The plain CLI `unwrap` output OBJ is still quads with no `vn`.
+- Quad-pen dots ignore occlusion.
+- A two-finger undo tap during finger drawing can add a tiny guide or contour first.
+- `xcodebuild` warns that the core and quadriflow source folders belong to two groups (cosmetic).
+- GCC has not been run on this Mac; only Clang is checked locally.
+- Face rings on quad-remesh output are helical: a ring started anywhere tends to wind over the whole mesh, so Insert Loop on raw remesh output roughly triples the face count. Guide strokes align the field but do not close the loops around a feature; Loop Around now closes a loop by hand, but the remesher does not. The acceptance chain therefore uses a snapped relax for its hand-retopology step, and the PRD's "retopo the eye loops by hand" waits on loop-closing in the remesher, or on a bounded loop cut between poles (Loop Around covers the closed-loop case by hand).
 - The acceptance reference sculpt is about 3M triangles, not the PRD's 5M: one more multires level would be 12M.
 - The deflate encoder uses fixed Huffman codes only, so files are larger than zlib's level 6 output. They are valid and readable everywhere.
 
 ### Next, in dependency order
 
-1. Retopology polish: closed loops around guided features (or a bounded loop cut), quad-pen tap-tap-lift input in the shell, slide loop, merge, symmetry, n-gon/pole warnings in the overlay (T-03, T-05), and Pencil Pro barrel roll for loop count (I-02).
-2. MikkTSpace tangents, curvature and cavity bakes, better chart packing, seam painting in the shell (U-02).
+1. Hands-on iPad testing of the finger-driven tools.
+2. Seam painting in the shell (U-02); curvature and cavity bakes.
 3. Tangent-space multires detail and sparse on-disk levels, dyntopo (S-03), Metal compute paths for remesh and bake (K-03).
+4. Retopology leftovers: merge, symmetry, n-gon/pole warnings in the overlay (T-03, T-05), Pencil Pro barrel roll for loop count (I-02).
 
 ## Phase 1: MVP (TestFlight)
 

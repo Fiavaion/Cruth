@@ -30,7 +30,8 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 ./build/release/tools/cruth-acceptance/cruth-acceptance --scale smoke --out build/acc   # 7 s; --scale full ~80 s
 cmake --preset asan && cmake --build --preset asan && ctest --preset asan              # before committing core changes
 ./scripts/ipad.sh build        # iPad app for the simulator (macOS + Xcode 26 only)
-./scripts/ipad.sh run          # build, launch in a simulator, stream logs
+./scripts/ipad.sh run          # build, wait for the simulator to boot, launch, stream logs
+./scripts/ipad.sh test         # 16-test XCUITest smoke suite in the simulator
 ```
 
 - Run tests in **Release**. Debug and ASan are very slow on quad remesh (Eigen unoptimised): the CLI chain takes about 40 minutes under ASan. The debug and asan test presets skip the acceptance label for that reason.
@@ -55,8 +56,12 @@ cmake --preset asan && cmake --build --preset asan && ctest --preset asan       
 
 ## Current state
 
-Phase 0 (headless core) has met its exit gate locally. See ROADMAP for measurements and known issues. The iPad shell has **not yet been compiled on a Mac**. An audit matched every Swift call against `cruth.h`, and every C++ file was syntax-checked against libc++ with the Xcode flags, but expect a small round of fixes on the first `./scripts/ipad.sh build`. Things to watch:
-- Xcode 26 may need `xcodebuild -downloadComponent MetalToolchain` before it can compile `Shaders.metal`.
+Phase 0 (headless core) has met its exit gate locally. See ROADMAP for measurements and known issues. The iPad shell builds and runs on a Mac (Xcode 26.6, iPad Pro 13-inch M5 simulator, iOS 26.5), and the core passes ctest on macOS/arm64. Things to know:
+- The Metal toolchain must be downloaded once (`xcodebuild -downloadComponent MetalToolchain`) before `Shaders.metal` compiles.
+- `./scripts/ipad.sh test` runs a 16-test XCUITest smoke suite. `ipad.sh run` waits for the simulator to boot.
+- Device signing has been tested through `shell-ipad/Signing.local.xcconfig`.
 - Keep Swift 5 mode with default concurrency checking. Don't enable "Default Actor Isolation = MainActor" or strict concurrency without fixing `Renderer` (MTKViewDelegate) and `SculptSession` background closures.
-- If `touches.first(where: sculpts)` in `SculptMetalView` fails to type-check, wrap it in a closure.
-- To change project settings, edit `shell-ipad/project.yml` (then `./scripts/ipad.sh generate`), never the generated project. Next work, in order: retopology polish (closed loops around guided features or a bounded loop cut, quad-pen tap input, slide loop), MikkTSpace tangents, better UV packing, seam painting in the shell, tangent-space multires, Metal compute paths, then phase 1 (TestFlight MVP).
+- GCC has not been run on this Mac.
+- To change project settings, edit `shell-ipad/project.yml` (then `./scripts/ipad.sh generate`), never the generated project.
+
+Next work, in order: hands-on iPad testing of the finger-driven tools, seam painting in the shell, tangent-space multires, Metal compute paths, then phase 1 (TestFlight MVP).

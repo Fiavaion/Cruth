@@ -74,7 +74,13 @@ To debug the core, use the Run and Debug panel: **Core: unit tests**, **Core: ac
 ./scripts/ipad.sh run
 ```
 
-This picks the first available iPad simulator. To choose another, set `CRUTH_SIMULATOR="iPad Pro 13-inch (M5)"` (list them with `xcrun simctl list devices available`). In the simulator the mouse acts as a finger: turn on **Finger Sculpting** in the brush panel to sculpt with it. The Pencil-only features (pressure, hover, squeeze) need a real iPad.
+This picks the first available iPad simulator. To choose another, set `CRUTH_SIMULATOR="iPad Pro 13-inch (M5)"` (list them with `xcrun simctl list devices available`). With finger sculpting on, a finger on the model sculpts and a finger on the background orbits; a mouse or trackpad acts the same way in the simulator. Turn on **Finger Sculpting** in the brush panel. The **Draw with Finger** toggle in the Guides and Retopo panels does the same for guide strokes and retopology tools. The Pencil-only features (pressure, hover, squeeze) need a real iPad.
+
+To run the 16-test XCUITest smoke suite in the simulator:
+
+```sh
+./scripts/ipad.sh test
+```
 
 ## 5. Your own iPad
 
@@ -94,7 +100,7 @@ This picks the first available iPad simulator. To choose another, set `CRUTH_SIM
 
 Good first prompts:
 
-- "Build the iPad app for the simulator and fix any compile errors." The Swift shell hasn't been compiled on a Mac yet, so start here.
+- "Build the iPad app for the simulator and run `./scripts/ipad.sh test`; fix anything that fails." The shell has been built and run on a Mac, so this is a regression check.
 - "Run the app in the simulator and check that the sculpt viewport and Remesh menu work."
 - "Pick the next item from docs/ROADMAP.md and implement it with tests."
 
