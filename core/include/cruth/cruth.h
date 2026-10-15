@@ -220,8 +220,10 @@ bool cruth_retopo_nearest_edge(const CruthRetopo* retopo, CruthVec3 point, uint3
  *        reverse of the t = -1 move), so a 3D drag d maps to
  *        t = dot(d, axis) / dot(axis, axis).
  * update: t in (-1, 1), absolute from where the loop was at begin (clamped to
- *        +-0.99). t > 0 moves toward the side the axis points to.
- * end:   finishes; begin..end is one cage undo step. Any other edit also ends it. */
+ *        +-0.99; NaN or infinity is ignored). t > 0 moves toward the side the axis points to.
+ * end:   finishes; begin..end is one cage undo step, taken on the first update
+ *        that moves the loop (a slide that never moves records nothing).
+ *        Any other edit also ends it. */
 CruthStatus cruth_retopo_slide_loop_begin(CruthRetopo* retopo, uint32_t a, uint32_t b, CruthVec3* axis);
 void cruth_retopo_slide_loop_update(CruthRetopo* retopo, float t);
 void cruth_retopo_slide_loop_end(CruthRetopo* retopo);

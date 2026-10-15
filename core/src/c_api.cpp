@@ -401,7 +401,10 @@ CruthStatus cruth_retopo_quad_pen_tap(CruthRetopo* retopo, CruthVec3 point, Crut
 }
 
 void cruth_retopo_quad_pen_lift(CruthRetopo* retopo) {
-    if (retopo) retopo->retopo.quad_pen_lift();
+    if (retopo) guarded([&] {
+            retopo->retopo.quad_pen_lift();
+            return CRUTH_OK;
+        });
 }
 
 size_t cruth_retopo_quad_pen_pending(const CruthRetopo* retopo, CruthVec3* out, size_t capacity) {
@@ -442,11 +445,17 @@ CruthStatus cruth_retopo_slide_loop_begin(CruthRetopo* retopo, uint32_t a, uint3
 }
 
 void cruth_retopo_slide_loop_update(CruthRetopo* retopo, float t) {
-    if (retopo) retopo->retopo.update_slide(t);
+    if (retopo) guarded([&] {
+            retopo->retopo.update_slide(t);  // the first move records the undo step, which allocates
+            return CRUTH_OK;
+        });
 }
 
 void cruth_retopo_slide_loop_end(CruthRetopo* retopo) {
-    if (retopo) retopo->retopo.end_slide();
+    if (retopo) guarded([&] {
+            retopo->retopo.end_slide();
+            return CRUTH_OK;
+        });
 }
 
 CruthStatus cruth_retopo_slide_loop(CruthRetopo* retopo, uint32_t a, uint32_t b, float t) {

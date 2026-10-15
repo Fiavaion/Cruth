@@ -99,14 +99,15 @@ public:
     // Slide loop (T-03): slides the edge loop through (a, b) between its
     // neighbouring rings, re-projected onto the reference. update_slide(t) is
     // absolute from where the loop was at begin_slide; t in (-1, 1) is clamped
-    // to [-0.99, 0.99]. t > 0 moves each vertex toward its neighbour across the
-    // face that has a -> b in its winding (on an outward-wound cage, the left of
+    // to [-0.99, 0.99]; a non-finite t is ignored. t > 0 moves each vertex
+    // toward its neighbour across the face that has a -> b in its winding (on an outward-wound cage, the left of
     // a -> b seen from outside), t < 0 toward the other side; a vertex with no
     // neighbour on that side stays put. begin_slide returns the slide axis v:
     // how far t = 1 moves the middle of edge (a, b), or, on a border where that
     // side has no face, the reverse of the t = -1 move. A drag d then maps to
     // t = dot(d, v) / dot(v, v) either way.
-    // begin..end is one undo step; any other edit ends the slide.
+    // begin..end is one undo step, taken on the first update that moves the
+    // loop (a slide that never moves records nothing); any other edit ends it.
     Result<Vec3> begin_slide(Index a, Index b);
     void update_slide(float t);
     void end_slide() { slide_.reset(); }
@@ -164,11 +165,13 @@ private:
     struct Slide {
         std::vector<Index> vertices;
         std::vector<Vec3> origin, positive, negative;  // targets at t = 1 and t = -1
+        bool recorded = false;                         // undo step taken (on the first move)
     };
 
     // Records an undo step before an edit, ending the quad-pen chain and any slide.
     void checkpoint() { commit({mesh_, last_contour_}); }
     void commit(Snapshot before);
+    bool step_history(std::vector<Snapshot>& from, std::vector<Snapshot>& to);
     Status bridge_chains(std::span<const Index> a, std::span<const Index> b, bool closed);
     Index nearest_vertex(Vec3 p, float radius) const;
     Index add_vertex_welded(Vec3 p);

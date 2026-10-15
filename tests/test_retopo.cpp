@@ -5,6 +5,7 @@
 
 #include "cruth/cruth.h"
 #include "cruth/document.hpp"
+#include "cruth/half_edge.hpp"
 #include "cruth/primitives.hpp"
 #include "cruth/print_check.hpp"
 #include "cruth/quad_remesh.hpp"
@@ -357,6 +358,50 @@ TEST(quad_pen_taps_build_chained_quads) {
     CHECK_EQ(r.stats().quads, 3u);
 }
 
+TEST(quad_pen_rejects_folded_crossed_and_repeated_quads) {
+    const Mesh sphere = make_quad_sphere(5, 1.0f);
+    const Vec3 a = cap_point(-0.1f, -0.1f), b = cap_point(0.1f, -0.1f);
+    const Vec3 c = cap_point(-0.1f, 0.1f), d = cap_point(0.1f, 0.1f);
+    // Quad 1, leaving the chain pending on its z = +0.1 edge.
+    auto start = [&](RetopoMesh& r) {
+        r.weld_radius = 0.03f;
+        for (const Vec3& p : {a, b, d, c}) REQUIRE(r.quad_pen_tap(p).is_ok());
+        REQUIRE(r.mesh().face_count() == 1u);
+        REQUIRE(r.quad_pen_pending().size() == 2u);
+    };
+    auto still_one_quad = [&](const RetopoMesh& r) {
+        CHECK_EQ(r.mesh().face_count(), 1u);
+        CHECK(HalfEdgeMesh::build(r.mesh()).is_ok());
+    };
+
+    // Chained taps back over quad 1 would fold the new quad onto it.
+    RetopoMesh fold(sphere);
+    start(fold);
+    REQUIRE(fold.quad_pen_tap(cap_point(0.1f, -0.05f)).is_ok());
+    CHECK(!fold.quad_pen_tap(cap_point(-0.1f, -0.05f)).is_ok());
+    CHECK_EQ(fold.quad_pen_pending().size(), 3u);  // the rejected tap is dropped, the rest kept
+    still_one_quad(fold);
+
+    // The same without a chain: two taps welded onto a border edge, two on that face's own side.
+    fold.quad_pen_lift();
+    for (const Vec3& p : {c, d, cap_point(0.1f, 0.0f)}) REQUIRE(fold.quad_pen_tap(p).is_ok());
+    CHECK(!fold.quad_pen_tap(cap_point(-0.1f, 0.0f)).is_ok());
+    still_one_quad(fold);
+
+    // Re-tapping all four corners of a lone quad repeats it.
+    fold.quad_pen_lift();
+    for (const Vec3& p : {a, b, d}) REQUIRE(fold.quad_pen_tap(p).is_ok());
+    CHECK(!fold.quad_pen_tap(c).is_ok());
+    still_one_quad(fold);
+
+    // Chained taps that cross the shared edge leave no non-crossing order: a bow-tie.
+    RetopoMesh bow(sphere);
+    start(bow);
+    REQUIRE(bow.quad_pen_tap(cap_point(0.0f, 0.3f)).is_ok());
+    CHECK(!bow.quad_pen_tap(cap_point(0.0f, 0.0f)).is_ok());
+    still_one_quad(bow);
+}
+
 TEST(c_api_quad_pen) {
     CruthDocument* doc = nullptr;
     REQUIRE(cruth_document_create_sphere(4, 1.0f, &doc) == CRUTH_OK);
@@ -427,6 +472,13 @@ TEST(slide_loop_between_neighbouring_rings) {
     for (Index v : mid) CHECK_NEAR(r.mesh().positions[v].y, -0.25f * up, 0.01);
     r.update_slide(0.0f);
     for (Index v : mid) CHECK(distance(r.mesh().positions[v], before[v]) < 1e-4f);
+    // t is clamped to +-0.99, and a non-finite t is ignored.
+    r.update_slide(0.99f);
+    const std::vector<Vec3> at_limit = r.mesh().positions;
+    r.update_slide(5.0f);
+    CHECK(r.mesh().positions == at_limit);
+    r.update_slide(std::nanf(""));
+    CHECK(r.mesh().positions == at_limit);
     r.update_slide(0.5f);
     r.end_slide();
     CHECK(!r.sliding());
@@ -521,6 +573,32 @@ TEST(retopology_undo_history) {
     REQUIRE(r.redo());
     CHECK_EQ(r.stats().quads, 40u);
     REQUIRE(r.undo());
+    // Edits that change nothing leave the history and its redo branch alone.
+    r.relax(0);
+    CHECK(r.can_redo());
+    const auto [ra, rb] = r.nearest_edge({0.0f, 0.0f, 0.5f});
+    REQUIRE(r.begin_slide(ra, rb).is_ok());
+    r.update_slide(std::nanf(""));
+    r.update_slide(0.0f);
+    r.end_slide();
+    CHECK(r.can_redo());
+    REQUIRE(r.slide_loop(ra, rb, 0.3f).is_ok());  // a slide that moves is a step
+    CHECK(!r.can_redo());
+    REQUIRE(r.undo());
+    CHECK(r.redo());
+    REQUIRE(r.undo());
+    REQUIRE(r.redo());
+    REQUIRE(r.undo());
+    // Non-finite input is rejected before anything changes.
+    CHECK(!r.insert_loop(a, b, std::nanf("")).is_ok());
+    std::vector<Vec3> bad{{0, 0, 0.5f}, {0.1f, 0, 0.5f}, {0, std::nanf(""), 0.5f}};
+    auto nan_stroke = r.insert_loop_around(bad);
+    REQUIRE(!nan_stroke.is_ok());
+    CHECK(nan_stroke.error().message.find("finite") != std::string::npos);
+    bad[2] = {0, 3.0e38f, 0.5f};
+    CHECK(!r.insert_loop_around(bad).is_ok());
+    CHECK(r.can_redo());
+    CHECK_EQ(r.stats().quads, 32u);
     r.relax(1);  // a new edit drops the redo branch
     CHECK(!r.can_redo());
     for (int i = 0; i < 6; ++i) REQUIRE(r.undo());
@@ -708,6 +786,8 @@ TEST(c_api_insert_loops) {
     CHECK(made >= 2u);
     CHECK(cruth_retopo_undo(retopo));
     CHECK(cruth_retopo_insert_loop(retopo, a, a, 0.5f, &made) == CRUTH_ERROR_INVALID_ARGUMENT);
+    CHECK(cruth_retopo_insert_loop(retopo, a, b, std::nanf(""), &made) == CRUTH_ERROR_INVALID_ARGUMENT);
+    CHECK_EQ(cruth_retopo_stats(retopo).quads, 36u);
     CHECK_EQ(made, 0u);
 
     // Round the vertex nearest the front of the tube: the four quads around it.
