@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: MIT
+#include <algorithm>
 #include <cmath>
 
 #include "cruth/cruth.h"
 #include "cruth/document.hpp"
 #include "cruth/primitives.hpp"
+#include "cruth/print_check.hpp"
+#include "cruth/quad_remesh.hpp"
 #include "cruth/retopo.hpp"
+#include "cruth/uv.hpp"
 #include "test.hpp"
 
 using namespace cruth;
@@ -180,4 +184,100 @@ TEST(c_api_retopology_and_guided_remesh) {
     o.guide_points = nullptr;
     CHECK(cruth_document_quad_remesh_ex(doc, &o) == CRUTH_ERROR_INVALID_ARGUMENT);
     cruth_document_destroy(doc);
+}
+
+TEST(insert_loop_across_a_quad_ring) {
+    // A 4x4 grid on the unit sphere's top cap, as quads.
+    const Mesh sphere = make_quad_sphere(4, 1.0f);
+    Mesh cap;
+    std::vector<Index> remap(sphere.vertex_count(), kInvalidIndex);
+    for (std::size_t f = 0; f < sphere.face_count(); ++f) {
+        if (sphere.face_centroid(f).y < 0.85f) continue;
+        std::vector<Index> c;
+        for (Index v : sphere.face(f)) {
+            if (remap[v] == kInvalidIndex) remap[v] = cap.add_vertex(sphere.positions[v]);
+            c.push_back(remap[v]);
+        }
+        cap.add_face(c);
+    }
+    RetopoMesh r(sphere, cap);
+    const std::size_t faces_before = r.mesh().face_count();
+    const auto [a, b] = r.nearest_edge({0.0f, 1.0f, 0.0f});
+    REQUIRE(a != kInvalidIndex);
+    auto loop = r.insert_loop(a, b, 0.5f);
+    REQUIRE(loop.is_ok());
+    const std::size_t ring = loop.value().size() - 1;  // an open ring: n faces, n + 1 cut edges
+    CHECK(ring >= 2);
+    CHECK_EQ(r.mesh().face_count(), faces_before + ring);
+    CHECK_EQ(r.stats().triangles + r.stats().ngons, 0u);
+    // New vertices sit on the surface, halfway along their edges (not zigzagging).
+    // (the reference is faceted, so snapped points sit up to ~0.1% inside the sphere)
+    for (Index v : loop.value()) CHECK_NEAR(length(r.mesh().positions[v]), 1.0, 2e-3);
+    // A closed ring (around a capsule) gains exactly one face per ring face.
+    RetopoMesh tube(capsule());
+    for (int i = 0; i < 3; ++i) {
+        const float y = -0.5f + 0.5f * float(i);
+        const std::vector<Vec3> stroke{{-0.6f, y, 0.4f}, {0.6f, y, 0.4f}};
+        REQUIRE(tube.add_contour(stroke, 8, {0, 0, -1}).is_ok());
+    }
+    const auto [c, d] = tube.nearest_edge({0.0f, -0.25f, 0.5f});
+    auto ring_loop = tube.insert_loop(c, d, 0.5f);
+    REQUIRE(ring_loop.is_ok());
+    CHECK_EQ(ring_loop.value().size(), 8u);
+    CHECK_EQ(tube.stats().quads, 24u);
+    CHECK(!tube.insert_loop(0, 9999).is_ok());
+}
+
+TEST(insert_loop_keeps_a_closed_quad_mesh_closed) {
+    // Rings on an irregular quad mesh wind around poles and can cross
+    // themselves; every loop must still leave a watertight all-quad mesh.
+    const Mesh sphere = make_quad_sphere(4, 1.0f);
+    QuadRemeshOptions options;
+    options.target_faces = 300;
+    auto low = quad_remesh(sphere, options);
+    REQUIRE(low.is_ok());
+    REQUIRE(RetopoMesh(sphere, low.value()).stats().boundary_edges == 0);
+    std::size_t tried = 0;
+    for (std::size_t f = 0; f < low.value().face_count(); f += 11) {
+        RetopoMesh r(sphere, low.value());
+        const auto fv = low.value().face(f);
+        auto loop = r.insert_loop(fv[0], fv[1], 0.3f);
+        REQUIRE(loop.is_ok());
+        const RetopoStats s = r.stats();
+        CHECK_EQ(s.boundary_edges, 0u);
+        CHECK_EQ(s.triangles + s.ngons, 0u);
+        CHECK(check_printability(r.mesh()).watertight());
+        ++tried;
+    }
+    CHECK(tried >= 20);
+}
+
+TEST(seams_split_unwrap_charts) {
+    const Mesh sphere = make_quad_sphere(3, 1.0f);
+    // Paint a seam along the x = 0 meridian: every edge whose endpoints straddle it.
+    std::vector<std::pair<Index, Index>> seams;
+    for (std::size_t f = 0; f < sphere.face_count(); ++f) {
+        auto fv = sphere.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            const Index p = fv[i], q = fv[(i + 1) % fv.size()];
+            if (std::abs(sphere.positions[p].x) < 1e-5f && std::abs(sphere.positions[q].x) < 1e-5f) seams.push_back({p, q});
+        }
+    }
+    REQUIRE(!seams.empty());
+    const auto groups = face_groups_from_seams(sphere, seams);
+    CHECK_EQ(*std::max_element(groups.begin(), groups.end()), 1);  // two halves
+    for (std::size_t f = 0; f < sphere.face_count(); ++f) {
+        // Each half of the sphere is one group.
+        CHECK_EQ(groups[f] == groups[0], (sphere.face_centroid(f).x > 0) == (sphere.face_centroid(0).x > 0));
+    }
+    UnwrapOptions o;
+    o.face_groups = groups;
+    o.tiles = 2;
+    auto uv = auto_unwrap(sphere, o);
+    REQUIRE(uv.is_ok());
+    for (std::size_t f = 0; f < sphere.face_count(); ++f) {
+        for (std::size_t g = 0; g < sphere.face_count(); ++g) {
+            if (uv.value().face_chart[f] == uv.value().face_chart[g]) CHECK_EQ(groups[f], groups[g]);
+        }
+    }
 }

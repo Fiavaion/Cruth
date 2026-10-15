@@ -14,6 +14,8 @@
 #pragma once
 
 #include <cstddef>
+#include <span>
+#include <utility>
 #include <vector>
 
 #include "cruth/mesh.hpp"
@@ -37,6 +39,9 @@ struct UVSet {
 struct UnwrapOptions {
     // Optional seam groups, one per face: charts never cross group borders.
     std::vector<int> face_groups;
+    // Optional painted seam edges (PRD U-02): charts never grow across them,
+    // even when they do not enclose a region (e.g. a cut down the back).
+    std::vector<std::pair<Index, Index>> seams;
     float max_chart_angle_degrees = 60.0f;  // normal cone half-angle per chart
     int resolution = 2048;                  // texture size per tile, for padding
     int padding_texels = 4;
@@ -49,6 +54,11 @@ struct UnwrapStats {
     float utilisation = 0;       // chart area / tile area, averaged over tiles
     float max_stretch = 0;       // worst per-face area ratio (uv / 3D, normalised)
 };
+
+// Seam groups from painted seam edges (PRD U-02): faces connected across
+// edges that are not seams share a group. Pass the result as
+// UnwrapOptions::face_groups so charts never cross a seam.
+std::vector<int> face_groups_from_seams(const Mesh& mesh, std::span<const std::pair<Index, Index>> seams);
 
 Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options = {}, UnwrapStats* stats = nullptr);
 

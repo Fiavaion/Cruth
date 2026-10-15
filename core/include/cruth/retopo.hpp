@@ -65,6 +65,16 @@ public:
     // One quad through four surface points; corners weld to nearby vertices.
     Status add_quad(const std::array<Vec3, 4>& corners);
 
+    // Edge (vertex pair) of the current mesh nearest to p.
+    std::pair<Index, Index> nearest_edge(Vec3 p) const;
+
+    // Inserts an edge loop across the quad ring through edge (a, b), cutting
+    // each ring edge at fraction t from the side of `a` (T-03 Insert loop).
+    // The ring stops at boundaries and non-quad faces (which gain the cut
+    // vertex, so the mesh stays watertight). Where the ring crosses itself, the
+    // quad is split into four. Returns the new loop's vertices.
+    Result<std::vector<Index>> insert_loop(Index a, Index b, float t = 0.5f);
+
     void move_vertex(Index v, Vec3 p);
     // Surface-snapped tangential smoothing; boundary vertices stay put unless asked.
     void relax(int iterations, bool include_boundary = false);

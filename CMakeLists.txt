@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 project(Cruth VERSION 0.1.0 LANGUAGES C CXX)
 
 option(CRUTH_BUILD_TESTS "Build the core test suite" ON)
-option(CRUTH_BUILD_CLI "Build the headless cruth-cli tool" ON)
+option(CRUTH_BUILD_CLI "Build the headless tools (cruth-cli, cruth-acceptance)" ON)
 option(CRUTH_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(CRUTH_SANITIZE "Build with AddressSanitizer and UBSan" OFF)
 
@@ -30,6 +30,7 @@ add_subdirectory(core)
 
 if(CRUTH_BUILD_CLI)
   add_subdirectory(tools/cruth-cli)
+  add_subdirectory(tools/cruth-acceptance)
 endif()
 
 if(CRUTH_BUILD_TESTS)

@@ -3,6 +3,13 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      acceptance_scale:
+        description: "Acceptance chain scale (smoke or full)"
+        default: full
+        type: choice
+        options: [smoke, full]
 
 permissions:
   contents: read
@@ -18,12 +25,15 @@ jobs:
           - os: ubuntu-latest
             config: Release
             flags: ""
+            ctest: ""
           - os: ubuntu-latest
             config: Debug
             flags: -DCRUTH_SANITIZE=ON
+            ctest: -LE acceptance  # the acceptance job covers it; too slow unoptimised
           - os: macos-latest
             config: Release
             flags: ""
+            ctest: ""
     steps:
       - uses: actions/checkout@v4
       - name: Configure
@@ -31,7 +41,31 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure ${{ matrix.ctest }}
+
+  acceptance:
+    # PRD phase-0 exit gate: sculpt -> guided quad remesh -> retopo -> seams +
+    # UDIM unwrap -> bake normal/displacement -> verify, timed per stage.
+    name: Acceptance chain (${{ inputs.acceptance_scale || 'smoke' }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCRUTH_BUILD_TESTS=OFF
+      - name: Build
+        run: cmake --build build --parallel --target cruth-acceptance
+      - name: Run
+        run: build/tools/cruth-acceptance/cruth-acceptance --scale ${{ inputs.acceptance_scale || 'smoke' }} --out acceptance
+      - name: Decode outputs independently
+        # The pure-Python decoder is too slow for the full scale's 4K maps.
+        if: ${{ (inputs.acceptance_scale || 'smoke') == 'smoke' }}
+        run: python3 tests/tools/check_images.py acceptance/*.exr acceptance/*.png
+      - name: Upload report and assets
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-${{ inputs.acceptance_scale || 'smoke' }}
+          path: acceptance/
 
   ipad-shell:
     name: iPad shell (simulator build)

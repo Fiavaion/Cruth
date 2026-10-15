@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "cruth/retopo.hpp"
 
+#include "cruth/half_edge.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
@@ -279,6 +281,136 @@ Status RetopoMesh::add_quad(const std::array<Vec3, 4>& corners) {
     }
     add_face_outward(c);
     return Status::ok();
+}
+
+std::pair<Index, Index> RetopoMesh::nearest_edge(Vec3 p) const {
+    std::pair<Index, Index> best{kInvalidIndex, kInvalidIndex};
+    float best_d = 3.4e38f;
+    for (std::size_t f = 0; f < mesh_.face_count(); ++f) {
+        auto fv = mesh_.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            const Vec3 a = mesh_.positions[fv[i]], b = mesh_.positions[fv[(i + 1) % fv.size()]];
+            const Vec3 ab = b - a;
+            const float t = std::clamp(dot(p - a, ab) / std::max(dot(ab, ab), 1e-20f), 0.0f, 1.0f);
+            const float d = length_squared(a + ab * t - p);
+            if (d < best_d) {
+                best_d = d;
+                best = {fv[i], fv[(i + 1) % fv.size()]};
+            }
+        }
+    }
+    return best;
+}
+
+Result<std::vector<Index>> RetopoMesh::insert_loop(Index a, Index b, float t) {
+    auto built = HalfEdgeMesh::build(mesh_);
+    if (!built) return built.error();
+    const HalfEdgeMesh& he = built.value();
+    Index start = kInvalidIndex;
+    for (Index h = 0; h < he.half_edges.size(); ++h) {
+        if (he.half_edges[h].origin == a && he.target(h) == b) start = h;
+    }
+    if (start == kInvalidIndex) return Error{ErrorCode::InvalidArgument, "insert loop: (a, b) is not an edge"};
+    t = std::clamp(t, 0.01f, 0.99f);
+
+    // Walk the ring of quads, recording each cut edge as (a-side vertex,
+    // other vertex) so every cut sits at t from the same side of the ring and
+    // the new loop runs parallel to its neighbours. A ring may cross itself:
+    // each quad can be passed once per pair of opposite edges (bit 0 = edges
+    // 0/2, bit 1 = edges 1/3), and a quad passed both ways becomes four quads.
+    using Cut = std::pair<Index, Index>;
+    std::unordered_map<Index, int> pairs;  // quad -> pairs crossed
+    auto local_index = [&](Index h) {
+        const Index f = he.half_edges[h].face;
+        int i = 0;
+        for (Index g = he.face_half_edge[f]; g != h; g = he.half_edges[g].next) ++i;
+        return i;
+    };
+    auto walk = [&](Index h, bool a_side_is_origin, std::vector<Cut>& cuts) {
+        while (true) {
+            const Index f = he.half_edges[h].face;
+            if (he.face_size(f) != 4) return;  // ends on a non-quad: it gains the cut vertex
+            const int bit = 1 << (local_index(h) & 1);
+            int& crossed = pairs[f];
+            if (crossed & bit) return;  // back where the ring started
+            crossed |= bit;
+            const Index opp = he.half_edges[he.half_edges[h].next].next;
+            // In quad (a, b, c, d) with h = a->b, the opposite edge is c->d and
+            // d is on a's side; walking from the reversed edge flips that.
+            cuts.push_back(a_side_is_origin ? Cut{he.target(opp), he.half_edges[opp].origin}
+                                            : Cut{he.half_edges[opp].origin, he.target(opp)});
+            const Index twin = he.half_edges[opp].twin;
+            if (twin == kInvalidIndex) return;
+            h = twin;
+        }
+    };
+    std::vector<Cut> forward{{a, b}}, backward;
+    walk(start, true, forward);
+    if (forward.size() > 1 && edge_key(forward.back().first, forward.back().second) == edge_key(a, b)) {
+        forward.pop_back();  // closed ring: back at the start edge
+    } else if (he.half_edges[start].twin != kInvalidIndex) {
+        walk(he.half_edges[start].twin, false, backward);
+    }
+    std::vector<Cut> cuts(backward.rbegin(), backward.rend());
+    cuts.insert(cuts.end(), forward.begin(), forward.end());
+
+    // One new vertex per cut edge.
+    std::unordered_map<std::uint64_t, Index> new_vertex;
+    std::vector<Index> loop;
+    for (const auto& [u, v] : cuts) {
+        const std::uint64_t key = edge_key(u, v);
+        if (new_vertex.count(key)) continue;
+        const Index nv = mesh_.add_vertex(snap(lerp(mesh_.positions[u], mesh_.positions[v], t)));
+        new_vertex.emplace(key, nv);
+        loop.push_back(nv);
+    }
+    auto cut_of = [&](Index u, Index v) {
+        const auto it = new_vertex.find(edge_key(u, v));
+        return it == new_vertex.end() ? kInvalidIndex : it->second;
+    };
+    Mesh out;
+    for (Index f = 0; f < he.face_count(); ++f) {
+        std::vector<Index> c;
+        const Index h0 = he.face_half_edge[f];
+        Index h = h0;
+        do {
+            c.push_back(he.half_edges[h].origin);
+            h = he.half_edges[h].next;
+        } while (h != h0);
+        const auto it = pairs.find(f);
+        const int crossed = it == pairs.end() ? 0 : it->second;
+        if (crossed == 3) {
+            // Crossed both ways: four quads around a centre vertex.
+            std::array<Index, 4> m{};
+            Vec3 centre;
+            for (int i = 0; i < 4; ++i) {
+                m[i] = cut_of(c[i], c[(i + 1) % 4]);
+                centre += mesh_.positions[m[i]] * 0.25f;
+            }
+            const Index centre_vertex = mesh_.add_vertex(snap(centre));
+            for (int i = 0; i < 4; ++i) out.add_face({c[i], m[i], centre_vertex, m[(i + 3) % 4]});
+        } else if (crossed != 0) {
+            // Crossed once: split between the cuts on edges k and k + 2.
+            const int k = crossed == 1 ? 0 : 1;
+            const Index qa = c[k], qb = c[k + 1], qc = c[(k + 2) % 4], qd = c[(k + 3) % 4];
+            const Index p = cut_of(qa, qb), q = cut_of(qc, qd);
+            out.add_face({qa, p, q, qd});
+            out.add_face({p, qb, qc, q});
+        } else {
+            // Untouched, or a non-quad where the ring ended: keep it, adding
+            // any cut vertex on its edges so the mesh stays watertight.
+            std::vector<Index> poly;
+            for (std::size_t i = 0; i < c.size(); ++i) {
+                poly.push_back(c[i]);
+                const Index m = cut_of(c[i], c[(i + 1) % c.size()]);
+                if (m != kInvalidIndex) poly.push_back(m);
+            }
+            out.add_face(poly);
+        }
+    }
+    out.positions = mesh_.positions;
+    mesh_ = std::move(out);
+    return loop;
 }
 
 void RetopoMesh::move_vertex(Index v, Vec3 p) {

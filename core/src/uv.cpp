@@ -131,9 +131,13 @@ std::vector<Chart> grow_charts(const Mesh& mesh, const UnwrapOptions& o) {
             if (!inserted) it->second.second = it->second.second == kInvalidIndex ? f : kInvalidIndex - 1;
         }
     }
+    std::unordered_map<std::uint64_t, bool> seam;
+    for (const auto& [p, q] : o.seams) seam[edge_key(p, q)] = true;
     auto neighbour = [&](Index f, std::size_t corner) -> Index {
         auto fv = mesh.face(f);
-        const auto& [a, b] = edge_faces.at(edge_key(fv[corner], fv[(corner + 1) % fv.size()]));
+        const std::uint64_t key = edge_key(fv[corner], fv[(corner + 1) % fv.size()]);
+        if (seam.count(key)) return kInvalidIndex;
+        const auto& [a, b] = edge_faces.at(key);
         if (b >= kInvalidIndex - 1) return kInvalidIndex;  // boundary or non-manifold: a seam
         return a == f ? b : a;
     };
@@ -490,6 +494,41 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options, Unwrap
         stats->max_stretch = worst;
     }
     return out;
+}
+
+std::vector<int> face_groups_from_seams(const Mesh& mesh, std::span<const std::pair<Index, Index>> seams) {
+    std::unordered_map<std::uint64_t, std::vector<Index>> edge_faces;
+    for (Index f = 0; f < mesh.face_count(); ++f) {
+        auto fv = mesh.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) edge_faces[edge_key(fv[i], fv[(i + 1) % fv.size()])].push_back(f);
+    }
+    std::unordered_map<std::uint64_t, bool> is_seam;
+    for (const auto& [a, b] : seams) is_seam[edge_key(a, b)] = true;
+    std::vector<int> group(mesh.face_count(), -1);
+    int next = 0;
+    std::vector<Index> stack;
+    for (Index seed = 0; seed < mesh.face_count(); ++seed) {
+        if (group[seed] >= 0) continue;
+        group[seed] = next;
+        stack.push_back(seed);
+        while (!stack.empty()) {
+            const Index f = stack.back();
+            stack.pop_back();
+            auto fv = mesh.face(f);
+            for (std::size_t i = 0; i < fv.size(); ++i) {
+                const std::uint64_t key = edge_key(fv[i], fv[(i + 1) % fv.size()]);
+                if (is_seam.count(key)) continue;
+                for (Index g : edge_faces[key]) {
+                    if (group[g] < 0) {
+                        group[g] = next;
+                        stack.push_back(g);
+                    }
+                }
+            }
+        }
+        ++next;
+    }
+    return group;
 }
 
 std::vector<float> uv_area_distortion(const Mesh& mesh, const UVSet& uv) {

@@ -2,7 +2,7 @@
 
 The PRD defines four phases gated by measurable exit criteria rather than dates. This file tracks progress against the requirement IDs in [PRD.md](PRD.md).
 
-## Phase 0: headless core (in progress)
+## Phase 0: headless core (exit gate met locally, with the deviations under Known issues)
 
 **Exit gate:** the core runs the sculpt → remesh → retopo → UV → bake chain on the reference asset from `cruth-cli`, in CI, on macOS and Linux, with no UI.
 
@@ -26,6 +26,8 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 - [x] Automatic UVs: charts, LSCM (conjugate gradient), packing with padding, UDIM, distortion and flip metrics; OBJ UV I/O (U-01, U-04, U-06 data)
 - [x] Baking, CPU reference: tangent/object normal, height, VDM and AO with cage, dilation and multithreading; PNG 8/16 and EXR half/float (ZIP) writers checked by an independent decoder (K-01, K-02)
 - [x] Game-asset export: decimate → unwrap → bake → OBJ + maps, from the C API and the iPad shell
+- [x] Phase-0 exit gate: `cruth-acceptance` runs the PRD acceptance chain on a deterministic reference head (sculpt → guided quad remesh → retopology touch-up → painted back seam + 2-tile UDIM unwrap → tangent normal + float displacement bake → OBJ/PNG/EXR), times every stage, and verifies "correct displacement" by rebuilding the sculpt from the low mesh plus the baked height map. Smoke scale is a ctest and a CI job; full scale runs from `workflow_dispatch`. Reports go to `report.json` and CI artifacts
+- [x] Retopology insert loop across quad rings (self-crossing rings split quads in four; non-quad ends absorb the cut, so meshes stay watertight); painted seams that unwrap charts never cross (T-03, U-02 core)
 - [x] Exception-free C API and headless CLI with an end-to-end ctest chain (sculpt → multires → subdivide → remesh → decimate → unwrap → bake → decode)
 - [x] iPad shell with Metal viewport, raw Pencil input, gestures, multires stepper, remesh and decimate menu, Files I/O (I-01, I-02, I-03, I-04, partial)
 
@@ -41,6 +43,10 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 | Quad remesh to 20k | 197k-triangle head | 24 s (was 134 s before the flow change) |
 | Unwrap | 1.5k-quad sphere, 8 charts | < 0.01 s |
 | Bake normal + height + AO (16 spp) + VDM, 512² | 12k → 98k-quad source | 0.8 s |
+| Acceptance chain, smoke | 197k-triangle head → 4.7k quads, 2 × 1K tiles | 7 s |
+| Acceptance chain, full | 3.1M-triangle head → 19.5k quads, 2 × 4K tiles | 77 s (quad remesh 48 s, bake 16 s) |
+
+The full acceptance run rebuilds the sculpt from the low mesh plus the baked displacement to an RMS error of 7.5e-6 (head about 2 units across), against 1.8e-4 for the bare low mesh: 24 times closer.
 
 PRD target: 512³ in ≤ 1 s on M4 and ≤ 3 s on A14, through the Metal compute path below.
 
@@ -54,14 +60,15 @@ PRD target: 512³ in ≤ 1 s on M4 and ≤ 3 s on A14, through the Metal compute
 - Quad remesh leaves a few dozen folded quad pairs on sharp crease strokes narrower than one quad (47 at 20k on the test head; none on smooth forms). The aggressive-SAT flip repair is compiled out because it needs an external solver.
 - The baker's tangent frame is per triangle, not MikkTSpace, so normal maps can show faint seams in engines that expect MikkTSpace.
 - UV packing is shelf-based on chart bounding boxes: about 35% of a tile is covered on organic shapes. Better packing is P1 (U-04).
+- Face rings on quad-remesh output are helical: a ring started anywhere tends to wind over the whole mesh, so Insert Loop on raw remesh output roughly triples the face count. Guide strokes align the field but do not close the loops around a feature. The acceptance chain therefore uses a snapped relax for its hand-retopology step, and the PRD's "retopo the eye loops by hand" waits on either loop-closing in the remesher or a bounded loop cut between poles.
+- The acceptance reference sculpt is about 3M triangles, not the PRD's 5M: one more multires level would be 12M.
 - The deflate encoder uses fixed Huffman codes only, so files are larger than zlib's level 6 output. They are valid and readable everywhere.
 
 ### Next, in dependency order
 
-1. **Reference asset plus the acceptance chain in CI** with timings per commit (the phase-0 exit gate).
-2. Retopology polish: quad-pen tap-tap-lift input in the shell, insert/slide loop, merge, symmetry, n-gon/pole warnings in the overlay (T-03, T-05), and Pencil Pro barrel roll for loop count (I-02).
-3. MikkTSpace tangents, curvature and cavity bakes, better chart packing, seam painting (U-02).
-4. Tangent-space multires detail and sparse on-disk levels, dyntopo (S-03), Metal compute paths for remesh and bake (K-03).
+1. Retopology polish: closed loops around guided features (or a bounded loop cut), quad-pen tap-tap-lift input in the shell, slide loop, merge, symmetry, n-gon/pole warnings in the overlay (T-03, T-05), and Pencil Pro barrel roll for loop count (I-02).
+2. MikkTSpace tangents, curvature and cavity bakes, better chart packing, seam painting in the shell (U-02).
+3. Tangent-space multires detail and sparse on-disk levels, dyntopo (S-03), Metal compute paths for remesh and bake (K-03).
 
 ## Phase 1: MVP (TestFlight)
 

@@ -37,7 +37,8 @@ third_party/     QuadriFlow, LEMON (subset) and Eigen; see THIRD_PARTY_NOTICES.m
   include/cruth/   Public headers; cruth.h is the C API for the shells.
   src/
 tools/cruth-cli/ Headless command-line driver for the core.
-tests/           Core unit tests and the CLI end-to-end chain (ctest).
+tools/cruth-acceptance/  The PRD phase-0 acceptance chain, timed and verified.
+tests/           Core unit tests, the CLI end-to-end chain and the acceptance smoke run (ctest).
 shell-ipad/      SwiftUI + Metal iPad app (XcodeGen project spec).
 shell-desktop/   Placeholder for the Dear ImGui desktop shell (PRD decision).
 spec/            Open project-format spec and the dependency allow-list.
@@ -72,6 +73,14 @@ Options: `-DCRUTH_SANITIZE=ON` for ASan and UBSan, and `-DCRUTH_WARNINGS_AS_ERRO
 ```
 
 Run `cruth-cli` with no arguments for the stroke-script syntax.
+
+### Run the acceptance chain
+
+```sh
+./build/tools/cruth-acceptance/cruth-acceptance --scale full --out acceptance
+```
+
+This sculpts a reference head, quad-remeshes it with guide strokes, unwraps it with a painted seam onto two UDIM tiles, bakes normal and float displacement maps, then checks that the low mesh plus the displacement rebuilds the sculpt. It prints per-stage timings and pass/fail gates, writes `acceptance/report.json`, and exits non-zero if a gate fails. `--scale smoke` (the ctest and CI default) takes a few seconds; `full` (about 3M triangles, 20k quads, 4K maps) takes a little over a minute on four cores.
 
 ## Build the iPad app
 

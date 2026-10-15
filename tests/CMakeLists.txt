@@ -24,3 +24,15 @@ if(TARGET cruth-cli)
       -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/tools/check_images.py
       -P ${CMAKE_CURRENT_SOURCE_DIR}/cli_chain.cmake)
 endif()
+
+# Phase-0 exit gate at smoke scale (the full scale runs on demand in CI).
+if(TARGET cruth-acceptance)
+  add_test(NAME acceptance_smoke
+    COMMAND ${CMAKE_COMMAND}
+      -DACCEPTANCE=$<TARGET_FILE:cruth-acceptance>
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/acceptance
+      -DPYTHON=$<$<BOOL:${Python3_FOUND}>:${Python3_EXECUTABLE}>
+      -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/tools/check_images.py
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/acceptance.cmake)
+  set_tests_properties(acceptance_smoke PROPERTIES LABELS acceptance TIMEOUT 1800)
+endif()
