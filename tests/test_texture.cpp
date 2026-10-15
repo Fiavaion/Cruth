@@ -416,3 +416,17 @@ TEST(unwrap_many_charts_is_fast) {
         CHECK(stats.utilisation >= (tiles == 1 ? 0.62f : 0.72f));  // shelf packer: 0.585, 0.702
     }
 }
+
+TEST(uv_queries_ignore_a_mismatched_uv_set) {
+    const Mesh cube = make_cube(2.0f);
+    UnwrapOptions o;
+    o.tiles = 3;
+    auto r = auto_unwrap(cube, o);
+    REQUIRE(r.is_ok());
+    const Mesh sphere = make_quad_sphere(2, 1.0f);  // more corners than the cube's UVs cover
+    REQUIRE(!r.value().matches(sphere));
+    CHECK(uv_tile_utilisation(sphere, r.value()) == std::vector<float>(3, 0.0f));
+    CHECK(uv_tile_utilisation(sphere, UVSet{}) == std::vector<float>(1, 0.0f));
+    CHECK_EQ(count_flipped_uv_faces(sphere, r.value()), 0u);
+    CHECK(uv_area_distortion(sphere, r.value()) == std::vector<float>(sphere.face_count(), 0.0f));
+}

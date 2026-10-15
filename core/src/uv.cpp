@@ -787,6 +787,7 @@ std::vector<float> uv_area_distortion(const Mesh& mesh, const UVSet& uv) {
 
 std::vector<float> uv_tile_utilisation(const Mesh& mesh, const UVSet& uv) {
     std::vector<double> area(std::size_t(std::max(uv.tiles, 1)), 0.0);
+    if (!uv.matches(mesh)) return {area.begin(), area.end()};
     for (std::size_t f = 0; f < mesh.face_count(); ++f) {
         double a = 0;
         for (std::size_t i = 1; i + 1 < mesh.face_size(f); ++i) {
