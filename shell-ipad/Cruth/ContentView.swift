@@ -181,7 +181,7 @@ struct ContentView: View {
                     .buttonStyle(.plain)
             }
             Spacer()
-            Text(session.fingerSculpting ? "Finger sculpts" : "Pencil sculpts · fingers navigate")
+            Text(session.fingerSculpting ? "Finger sculpts · drag background to orbit" : "Pencil sculpts · fingers navigate")
                 .foregroundStyle(.secondary)
         }
         .font(.footnote)

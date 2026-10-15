@@ -11,7 +11,8 @@ import UIKit
 /// - Pencil double-tap toggles invert; Pencil Pro squeeze toggles Smooth.
 /// - Hover (M2+ iPads) shows the brush footprint before contact.
 ///
-/// With "finger sculpting" on, a single finger sculpts instead of orbiting.
+/// With "finger sculpting" on, a single finger that lands on the model sculpts;
+/// one that lands on the background still orbits.
 final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInteractionDelegate {
     let session: SculptSession
     private(set) var renderer: Renderer?
@@ -72,7 +73,6 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
 
     /// Called by SwiftUI when the session publishes a change.
     func sessionDidChange() {
-        orbitGesture.isEnabled = !session.fingerSculpting
         refreshOverlay()
         setNeedsDisplay()
     }
@@ -216,7 +216,16 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
 
     private func sculpts(with touch: UITouch) -> Bool {
         guard !session.isBusy else { return false }  // a background command owns the document
-        return touch.type == .pencil || (session.fingerSculpting && touch.type == .direct)
+        if touch.type == .pencil { return true }
+        // A finger sculpts only when it lands on the model; on the background it
+        // orbits, so finger sculpting still has a way to turn the view.
+        return session.fingerSculpting && touch.type == .direct && hitsModel(at: touch.location(in: self))
+    }
+
+    private func hitsModel(at point: CGPoint) -> Bool {
+        guard let renderer else { return false }
+        let ray = renderer.camera.ray(through: point, viewSize: bounds.size)
+        return session.raycast(origin: ray.origin, direction: ray.direction) != nil
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
