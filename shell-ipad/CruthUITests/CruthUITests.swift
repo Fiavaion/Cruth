@@ -133,9 +133,7 @@ final class CruthUITests: XCTestCase {
         selectMode("Retopo")
         let stats = app.staticTexts["retopoStats"]
         XCTAssertTrue(stats.waitForExistence(timeout: 10))
-        let tool = app.segmentedControls["retopoToolPicker"].buttons["Strip"]
-        XCTAssertTrue(tool.waitForExistence(timeout: 10))
-        tool.tap()
+        selectRetopoTool("strip")
 
         // Default strip: 6 segments, so one stroke adds 6 quads.
         drag(from: CGVector(dx: 0.4, dy: 0.5), to: CGVector(dx: 0.6, dy: 0.5))
@@ -149,6 +147,98 @@ final class CruthUITests: XCTestCase {
         XCTAssertNotEqual(vertexCount(), initialVertices)
 
         undo(backTo: initialVertices)
+    }
+
+    func testRetopoQuadPenTapsMakeAQuadAndUndo() {
+        let stats = openRetopo(tool: "quadPen")
+        let pending = app.staticTexts["quadPenPending"]
+        let lift = app.buttons["retopoLiftButton"]
+        XCTAssertTrue(pending.waitForExistence(timeout: 10))
+        XCTAssertFalse(lift.isEnabled, "Lift is enabled with no taps pending")
+
+        // Four taps round a square on the front of the sphere; any order closes it.
+        let corners = [CGVector(dx: 0.45, dy: 0.42), CGVector(dx: 0.55, dy: 0.42),
+                       CGVector(dx: 0.55, dy: 0.58), CGVector(dx: 0.45, dy: 0.58)]
+        for (i, corner) in corners.enumerated() {
+            tap(corner)
+            if i < 3 {
+                waitFor(pending, "label BEGINSWITH %@", "\(i + 1) taps", timeout: 10,
+                        "tap \(i + 1) was not recorded (message: \(statusMessage()))")
+            }
+        }
+        waitFor(stats, "label BEGINSWITH '1 quads'", timeout: 10,
+                "four quad-pen taps did not make a quad (message: \(statusMessage()))")
+        // The chain carries on from the quad's last edge until Lift.
+        XCTAssertTrue(lift.isEnabled, "the chain should leave the shared edge pending")
+        lift.tap()
+        waitFor(pending, "label BEGINSWITH '0 taps'", timeout: 10, "Lift did not end the chain")
+        XCTAssertFalse(lift.isEnabled)
+
+        // Toolbar undo steps the cage, not the document.
+        XCTAssertTrue(undoButton.isEnabled, "the quad did not record a cage undo step")
+        undoButton.tap()
+        waitFor(stats, "label BEGINSWITH '0 quads'", timeout: 10, "undo did not remove the quad")
+        XCTAssertFalse(undoButton.isEnabled)
+        XCTAssertTrue(redoButton.isEnabled, "undoing the quad should make it redoable")
+        XCTAssertEqual(vertexCount(), initialVertices, "cage undo touched the document")
+    }
+
+    func testRetopoSlideLoopIsOneCageUndoStep() {
+        let stats = openRetopo(tool: "contour")
+        drag(from: CGVector(dx: 0.4, dy: 0.42), to: CGVector(dx: 0.6, dy: 0.42))
+        drag(from: CGVector(dx: 0.4, dy: 0.58), to: CGVector(dx: 0.6, dy: 0.58))
+        waitFor(stats, "label BEGINSWITH '12 quads'", timeout: 10, "two contours did not bridge into 12 quads")
+
+        // Drag from the first loop toward the second: the loop moves, the counts do not.
+        selectRetopoTool("slideLoop")
+        drag(from: CGVector(dx: 0.5, dy: 0.42), to: CGVector(dx: 0.5, dy: 0.48))
+        XCTAssertTrue(stats.label.hasPrefix("12 quads"), "sliding changed the topology: \(stats.label)")
+        XCTAssertFalse(redoButton.isEnabled)
+
+        // The slide is its own undo step: undoing it keeps both contours.
+        undoButton.tap()
+        waitFor(redoButton, "isEnabled == true", timeout: 10, "undo after the slide did nothing")
+        XCTAssertTrue(stats.label.hasPrefix("12 quads"),
+                      "undo removed a contour, so the slide recorded no undo step (message: \(statusMessage()))")
+        XCTAssertTrue(undoButton.isEnabled)
+        undoButton.tap()
+        waitFor(stats, "label BEGINSWITH '0 quads'", timeout: 10, "second undo did not remove the bridging contour")
+    }
+
+    func testRetopoInsertLoopAddsQuadsToAStrip() {
+        let stats = openRetopo(tool: "strip")
+        drag(from: CGVector(dx: 0.4, dy: 0.5), to: CGVector(dx: 0.6, dy: 0.5))
+        waitFor(stats, "label BEGINSWITH '6 quads'", timeout: 10, "strip stroke did not add 6 quads")
+
+        selectRetopoTool("insertLoop")
+        tap(CGVector(dx: 0.5, dy: 0.5))
+        waitFor(stats, "NOT (label BEGINSWITH '6 quads')", timeout: 10,
+                "Insert Loop did not change the cage (message: \(statusMessage()))")
+        XCTAssertGreaterThan(retopoQuads(stats), 6)
+
+        undoButton.tap()
+        waitFor(stats, "label BEGINSWITH '6 quads'", timeout: 10, "undo did not remove the inserted loop")
+    }
+
+    func testRetopoLoopAroundReportsAnOutcome() {
+        let stats = openRetopo(tool: "contour")
+        drag(from: CGVector(dx: 0.4, dy: 0.42), to: CGVector(dx: 0.6, dy: 0.42))
+        drag(from: CGVector(dx: 0.4, dy: 0.58), to: CGVector(dx: 0.6, dy: 0.58))
+        waitFor(stats, "label BEGINSWITH '12 quads'", timeout: 10, "two contours did not bridge into 12 quads")
+
+        // A straight drag is all XCUITest can draw. The core joins its ends, so it
+        // either loops round the band or is refused with a reason; both are
+        // reported in the status bar, starting with "Loop" / "loop around".
+        selectRetopoTool("loopAround")
+        drag(from: CGVector(dx: 0.45, dy: 0.5), to: CGVector(dx: 0.55, dy: 0.5))
+        let message = app.staticTexts["statusMessage"]
+        waitFor(message, "label BEGINSWITH[c] 'loop'", timeout: 10,
+                "Loop Around reported nothing useful (message: \(statusMessage()))")
+        if message.label.hasPrefix("Loop of") {
+            XCTAssertGreaterThan(retopoQuads(stats), 12, "Loop Around reported success but added no quads")
+        } else {
+            XCTAssertEqual(retopoQuads(stats), 12, "a refused Loop Around changed the cage")
+        }
     }
 
     func testPrintCheckReportsTheSphereAsPrintable() {
@@ -213,6 +303,29 @@ final class CruthUITests: XCTestCase {
         XCTAssertTrue(segment.waitForExistence(timeout: 10), "mode '\(title)' not found", file: file, line: line)
         segment.tap()
         waitFor(segment, "isSelected == true", timeout: 5, "mode '\(title)' not selected", file: file, line: line)
+    }
+
+    /// Finger input on, Retopo mode, the given tool; returns the cage stats line.
+    private func openRetopo(tool: String, file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
+        setFingerSculpting(true, file: file, line: line)
+        selectMode("Retopo", file: file, line: line)
+        let stats = app.staticTexts["retopoStats"]
+        XCTAssertTrue(stats.waitForExistence(timeout: 10), file: file, line: line)
+        XCTAssertEqual(retopoQuads(stats), 0, file: file, line: line)
+        selectRetopoTool(tool, file: file, line: line)
+        return stats
+    }
+
+    private func selectRetopoTool(_ tool: String, file: StaticString = #filePath, line: UInt = #line) {
+        let button = app.buttons["retopoTool.\(tool)"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10), "retopo tool '\(tool)' not found", file: file, line: line)
+        button.tap()
+        waitFor(button, "isSelected == true", timeout: 5, "retopo tool '\(tool)' not selected", file: file, line: line)
+    }
+
+    /// A single finger tap on the viewport at a normalised point.
+    private func tap(_ at: CGVector) {
+        viewport.coordinate(withNormalizedOffset: at).tap()
     }
 
     /// A finger press-and-drag on the viewport between normalised points.

@@ -12,6 +12,9 @@ import UIKit
 /// - Pencil double-tap toggles invert; Pencil Pro squeeze toggles Smooth.
 /// - Hover (M2+ iPads, or a pointer) shows the brush footprint before contact.
 ///
+/// In Retopo mode, Quad Pen and Insert Loop take taps, Slide Loop takes a drag
+/// and the other tools take strokes.
+///
 /// With "finger sculpting" on, a single finger or a pointer click that lands on
 /// the model sculpts; one that lands on the background still orbits. Pointer
 /// clicks reach touchesBegan as .indirectPointer touches because Info.plist sets
@@ -35,7 +38,18 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     private let retopoLayer = CAShapeLayer()
     private let hiddenRetopoLayer = CAShapeLayer()
     private let pathLayer = CAShapeLayer()
+    private let penLayer = CAShapeLayer()  // pending quad-pen taps
     private var pathPoints: [SIMD3<Float>] = []
+
+    // Retopology tools that take taps or drags rather than strokes: the tool and
+    // where the touch landed, whether it has moved too far to be a tap, and the
+    // loop slide it started (axis, and the camera-facing plane it drags on).
+    private var touchTool: RetopoTool?
+    private var touchOrigin: (location: CGPoint, hit: SIMD3<Float>?)?
+    private var touchTravelled = false
+    private var slide: (axis: SIMD3<Float>, plane: (point: SIMD3<Float>, normal: SIMD3<Float>))?
+    /// Screen distance, in points, a touch may move and still count as a tap.
+    private static let tapSlop: CGFloat = 10
 
     init(session: SculptSession) {
         self.session = session
@@ -67,6 +81,11 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
             overlay.lineDashPattern = hidden ? [4, 4] : nil
             layer.addSublayer(overlay)
         }
+
+        penLayer.fillColor = UIColor.systemYellow.cgColor
+        penLayer.strokeColor = UIColor.black.withAlphaComponent(0.6).cgColor
+        penLayer.lineWidth = 1
+        layer.addSublayer(penLayer)
 
         cursor.fillColor = UIColor.clear.cgColor
         cursor.strokeColor = UIColor.white.withAlphaComponent(0.8).cgColor
@@ -149,8 +168,14 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         for i in stride(from: 0, to: edges.count - 1, by: 2) {
             polyline([edges[i], edges[i + 1]], shown: cage, hidden: hiddenCage)
         }
+        let pen = UIBezierPath()
+        for p in session.quadPenPending {
+            guard let q = camera.project(p, viewSize: size) else { continue }
+            pen.append(UIBezierPath(ovalIn: CGRect(x: q.x - 5, y: q.y - 5, width: 10, height: 10)))
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        penLayer.path = pen.cgPath
         guideLayer.path = guides.cgPath
         hiddenGuideLayer.path = hiddenGuides.cgPath
         retopoLayer.path = cage.cgPath
@@ -311,7 +336,7 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         if strokeTouch != nil, session.fingerSculpting, (event?.allTouches?.count ?? 0) > 1,
            strokeTouch?.type == .direct {
             // A second finger means navigation, not sculpting.
-            finishStroke()
+            finishStroke(commit: false)
             return
         }
         // Only the primary mouse button sculpts; fingers and Pencil carry no buttons.
@@ -320,32 +345,56 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         strokeTouch = touch
         grabPlane = nil
         pathPoints.removeAll()
+        touchTool = session.mode == .retopo && session.retopoTool.input != .stroke ? session.retopoTool : nil
+        touchTravelled = false
+        slide = nil
         if session.mode == .sculpt { session.beginStroke() }
-        addSamples(for: touch, event: event)
+        if touchTool != nil {
+            let location = touch.location(in: self)
+            touchOrigin = (location, surfacePoint(at: location))
+        } else {
+            addSamples(for: touch, event: event)
+        }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         super.touchesMoved(touches, with: event)
         guard let touch = strokeTouch, touches.contains(touch) else { return }
-        addSamples(for: touch, event: event)
+        if touchTool != nil { trackToolTouch(touch) } else { addSamples(for: touch, event: event) }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         super.touchesEnded(touches, with: event)
         guard let touch = strokeTouch, touches.contains(touch) else { return }
-        addSamples(for: touch, event: event)
-        finishStroke()
+        if touchTool != nil { trackToolTouch(touch) } else { addSamples(for: touch, event: event) }
+        finishStroke(commit: true)
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         super.touchesCancelled(touches, with: event)
         guard let touch = strokeTouch, touches.contains(touch) else { return }
-        finishStroke()
+        finishStroke(commit: false)
     }
 
-    private func finishStroke() {
+    /// commit is false when the touch turned into navigation or was cancelled:
+    /// a pending tap is then dropped rather than placed.
+    private func finishStroke(commit: Bool) {
         if session.mode == .sculpt {
             session.endStroke()
+        } else if let tool = touchTool {
+            if slide != nil {
+                session.endSlideLoop()
+            } else if commit, !touchTravelled, let hit = touchOrigin?.hit {
+                switch tool {
+                case .quadPen: session.quadPenTap(at: hit)
+                case .insertLoop: session.insertLoop(near: hit)
+                default: break
+                }
+            }
+            touchTool = nil
+            touchOrigin = nil
+            slide = nil
+            refreshOverlay()
         } else {
             // Guide or retopology stroke: hand the surface path to the session.
             let points = pathPoints
@@ -357,6 +406,36 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         grabPlane = nil
         cursor.isHidden = true
         setNeedsDisplay()
+    }
+
+    private func surfacePoint(at point: CGPoint) -> SIMD3<Float>? {
+        guard let renderer else { return nil }
+        let ray = renderer.camera.ray(through: point, viewSize: bounds.size)
+        return session.raycast(origin: ray.origin, direction: ray.direction)?.position
+    }
+
+    /// Tap and drag tools: a touch that moves past the tap slop stops being a
+    /// tap; for Slide Loop it starts the slide from the edge nearest to where the
+    /// touch landed, then maps the drag onto the slide axis.
+    private func trackToolTouch(_ touch: UITouch) {
+        guard let renderer, let origin = touchOrigin else { return }
+        let location = touch.location(in: self)
+        if !touchTravelled, hypot(location.x - origin.location.x, location.y - origin.location.y) > Self.tapSlop {
+            touchTravelled = true
+            if touchTool == .slideLoop, let hit = origin.hit, let axis = session.beginSlideLoop(near: hit) {
+                // Like the grab brush: drag on a plane facing the camera through
+                // the start point, because the surface under the finger moves.
+                slide = (axis, (hit, -renderer.camera.forward))
+            }
+        }
+        guard let slide else { return }
+        let ray = renderer.camera.ray(through: location, viewSize: bounds.size)
+        let denom = simd_dot(ray.direction, slide.plane.normal)
+        let axisSquared = simd_length_squared(slide.axis)
+        guard abs(denom) > 1e-6, axisSquared > 0 else { return }
+        let drag = ray.origin + ray.direction * (simd_dot(slide.plane.point - ray.origin, slide.plane.normal) / denom)
+            - slide.plane.point
+        session.updateSlideLoop(simd_dot(drag, slide.axis) / axisSquared)
     }
 
     private func addSamples(for touch: UITouch, event: UIEvent?) {
