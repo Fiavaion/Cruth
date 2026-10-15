@@ -246,7 +246,7 @@ final class SculptSession: ObservableObject {
 
     /// t is absolute from where the loop was at begin; the core clamps it.
     func updateSlideLoop(_ t: Float) {
-        guard let retopo else { return }
+        guard let retopo, !isBusy else { return }
         cruth_retopo_slide_loop_update(retopo, t)
         refreshRetopo()
     }
@@ -289,10 +289,14 @@ final class SculptSession: ObservableObject {
     /// Replaces the sculpt with the retopology, carrying the sculpt over as
     /// multires detail when Keep Sculpt Detail is on (PRD T-06).
     func applyRetopo() {
-        guard let retopo, retopoStats.quads + retopoStats.triangles + retopoStats.ngons > 0 else {
+        guard let retopo, !isBusy else { return }
+        guard retopoStats.quads + retopoStats.triangles + retopoStats.ngons > 0 else {
             message = "Draw contours or strips first."
             return
         }
+        // A slide still under a finger (Apply tapped with a second finger) would
+        // keep moving the cage while Apply copies it; finish it first.
+        cruth_retopo_slide_loop_end(retopo)
         liftQuadPen()
         let levels: Int32 = keepDetail ? 2 : 0
         runInBackground("Applying retopology…", done: "Retopology applied") { doc in
