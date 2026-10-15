@@ -29,6 +29,11 @@ if ! xcrun simctl list runtimes 2>/dev/null | grep -q "iOS"; then
   echo "note: no iOS simulator runtime found. Install one in Xcode > Settings > Components (or: xcodebuild -downloadPlatform iOS)."
 fi
 
+if ! xcrun -f metal >/dev/null 2>&1 || ! xcrun metal -v >/dev/null 2>&1; then
+  echo "Installing the Metal toolchain (Xcode 26 ships it separately)..."
+  xcodebuild -downloadComponent MetalToolchain || echo "warning: install it from Xcode > Settings > Components"
+fi
+
 say "Homebrew packages: cmake, ninja, xcodegen"
 command -v brew >/dev/null || fail "Homebrew is needed: see https://brew.sh"
 for pkg in cmake ninja xcodegen; do

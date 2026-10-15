@@ -1,0 +1,8 @@
+// Code signing for device builds. Put your own values in Signing.local.xcconfig
+// next to this file (git-ignored), for example:
+//   DEVELOPMENT_TEAM = ABCDE12345
+//   CRUTH_BUNDLE_ID = com.yourname.cruth
+// SPDX-License-Identifier: MIT
+CRUTH_BUNDLE_ID = org.cruth.app
+CODE_SIGN_STYLE = Automatic
+#include? "Signing.local.xcconfig"

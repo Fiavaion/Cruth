@@ -102,6 +102,7 @@ Good first prompts:
 
 - **`cmake --preset` says Ninja not found:** `brew install ninja` (macOS) or `sudo apt install ninja-build` (Linux).
 - **`xcodebuild` says it requires Xcode** but only the command-line tools are selected: `sudo xcode-select -s /Applications/Xcode.app`.
+- **"Metal Toolchain not installed"** when compiling `Shaders.metal`: Xcode 26 ships the Metal compiler as a separate component. Run `xcodebuild -downloadComponent MetalToolchain`, or use Xcode → Settings → Components.
 - **No iPad simulator:** Xcode → Settings → Components, install the iOS 26 simulator runtime.
 - **"No signing certificate" or "requires a development team"** on a device build: see section 5. Simulator builds need no signing.
 - **The generated project is out of date** after you add or move Swift files: run `./scripts/ipad.sh generate`. Never edit `Cruth.xcodeproj` by hand; change `shell-ipad/project.yml` instead.

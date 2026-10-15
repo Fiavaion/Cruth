@@ -27,13 +27,22 @@ targets:
       - path: ../core/include
         group: Core
         buildPhase: none
+      # QuadriFlow builds as C++17, as in third_party/CMakeLists.txt (it also
+      # compiles as C++20 with libc++; see quadriflow/CRUTH_PATCHES.md).
+      # Per-file flags come after the target's -std=c++20, so this -std wins.
       - path: ../third_party/quadriflow/src
         group: ThirdParty/QuadriFlow
-        compilerFlags: ["-w"]
+        compilerFlags: ["-w", "-std=c++17"]
+    # Signing for device builds: Signing.xcconfig optionally includes the
+    # git-ignored Signing.local.xcconfig with your DEVELOPMENT_TEAM and
+    # CRUTH_BUNDLE_ID (docs/SETUP.md). Simulator builds need neither.
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
     settings:
       base:
         PRODUCT_NAME: Cruth
-        PRODUCT_BUNDLE_IDENTIFIER: org.cruth.app
+        PRODUCT_BUNDLE_IDENTIFIER: $(CRUTH_BUNDLE_ID)
         TARGETED_DEVICE_FAMILY: "2"
         INFOPLIST_FILE: Cruth/Info.plist
         SWIFT_OBJC_BRIDGING_HEADER: Cruth/Cruth-Bridging-Header.h
@@ -47,5 +56,8 @@ targets:
           - $(inherited)
           - EIGEN_MPL2_ONLY
           - QUADRIFLOW_NO_EXTERNAL_SAT
+        # Resolve includes through HEADER_SEARCH_PATHS only: core and QuadriFlow
+        # both have a subdivide.hpp, which a header map would make ambiguous.
+        USE_HEADERMAP: NO
         SUPPORTS_MACCATALYST: NO
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO

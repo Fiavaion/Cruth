@@ -55,4 +55,8 @@ cmake --preset asan && cmake --build --preset asan && ctest --preset asan       
 
 ## Current state
 
-Phase 0 (headless core) has met its exit gate locally. See ROADMAP for measurements and known issues. The iPad shell has **not yet been compiled on a Mac**, so expect a round of Xcode fixes on the first build. Next work, in order: retopology polish (closed loops around guided features or a bounded loop cut, quad-pen tap input, slide loop), MikkTSpace tangents, better UV packing, seam painting in the shell, tangent-space multires, Metal compute paths, then phase 1 (TestFlight MVP).
+Phase 0 (headless core) has met its exit gate locally. See ROADMAP for measurements and known issues. The iPad shell has **not yet been compiled on a Mac**. An audit matched every Swift call against `cruth.h`, and every C++ file was syntax-checked against libc++ with the Xcode flags, but expect a small round of fixes on the first `./scripts/ipad.sh build`. Things to watch:
+- Xcode 26 may need `xcodebuild -downloadComponent MetalToolchain` before it can compile `Shaders.metal`.
+- Keep Swift 5 mode with default concurrency checking. Don't enable "Default Actor Isolation = MainActor" or strict concurrency without fixing `Renderer` (MTKViewDelegate) and `SculptSession` background closures.
+- If `touches.first(where: sculpts)` in `SculptMetalView` fails to type-check, wrap it in a closure.
+- To change project settings, edit `shell-ipad/project.yml` (then `./scripts/ipad.sh generate`), never the generated project. Next work, in order: retopology polish (closed loops around guided features or a bounded loop cut, quad-pen tap input, slide loop), MikkTSpace tangents, better UV packing, seam painting in the shell, tangent-space multires, Metal compute paths, then phase 1 (TestFlight MVP).

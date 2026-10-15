@@ -14,3 +14,13 @@ Every change is marked `[Cruth patch]` in the source.
   `system()`, and a library must not spawn processes.
 - `hierarchy.cpp`, `optimizer.cpp`: `exit()` on internal-consistency failures now throws
   `std::runtime_error`, which Cruth's wrapper reports as an error instead of terminating the app.
+- `loader.cpp`: `obj_vertexHash` no longer derives from `std::unary_function`, which C++17 removed
+  (libc++ and MSVC no longer provide it).
+
+## lemon
+
+Vendored header subset with a hand-written `lemon/config.h` (`LEMON_ONLY_TEMPLATES`).
+
+- `lemon/bits/array_map.h`: element construction and destruction go through
+  `std::allocator_traits` instead of `std::allocator::construct`/`destroy`, which C++20 removed.
+  This lets QuadriFlow compile as C++20 against libc++ (Xcode's default).
