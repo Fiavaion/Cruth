@@ -26,8 +26,11 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     private var grabPlane: (point: SIMD3<Float>, normal: SIMD3<Float>)?
 
     // Guides and retopology draw as overlays, re-projected when the camera moves.
+    // Parts hidden behind the model go to a faint dashed twin layer.
     private let guideLayer = CAShapeLayer()
+    private let hiddenGuideLayer = CAShapeLayer()
     private let retopoLayer = CAShapeLayer()
+    private let hiddenRetopoLayer = CAShapeLayer()
     private let pathLayer = CAShapeLayer()
     private var pathPoints: [SIMD3<Float>] = []
 
@@ -48,14 +51,17 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         installGestures()
         addInteraction(makePencilInteraction())
 
-        for (overlay, color, width) in [(guideLayer, UIColor.systemOrange, 3.0),
-                                        (retopoLayer, UIColor.systemTeal, 1.5),
-                                        (pathLayer, UIColor.systemYellow, 2.0)] {
+        for (overlay, color, width, hidden) in [(hiddenGuideLayer, UIColor.systemOrange, 2.0, true),
+                                                (hiddenRetopoLayer, UIColor.systemTeal, 1.0, true),
+                                                (guideLayer, UIColor.systemOrange, 3.0, false),
+                                                (retopoLayer, UIColor.systemTeal, 1.5, false),
+                                                (pathLayer, UIColor.systemYellow, 2.0, false)] {
             overlay.fillColor = UIColor.clear.cgColor
-            overlay.strokeColor = color.withAlphaComponent(0.9).cgColor
+            overlay.strokeColor = color.withAlphaComponent(hidden ? 0.35 : 0.9).cgColor
             overlay.lineWidth = CGFloat(width)
             overlay.lineJoin = .round
-            overlay.lineCap = .round
+            overlay.lineCap = hidden ? .butt : .round
+            overlay.lineDashPattern = hidden ? [4, 4] : nil
             layer.addSublayer(overlay)
         }
 
@@ -77,33 +83,99 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         setNeedsDisplay()
     }
 
-    /// Projects guides and the retopology cage into the view. Occlusion is not
-    /// tested yet; strokes behind the model show through.
+    /// Projects guides and the retopology cage into the view, splitting each
+    /// polyline into the parts in front of the model and the parts behind it.
     func refreshOverlay() {
         guard let renderer else { return }
+        let camera = renderer.camera
         let size = bounds.size
-        func polyline(_ points: [SIMD3<Float>], into path: UIBezierPath) {
-            var started = false
-            for p in points {
-                guard let q = renderer.camera.project(p, viewSize: size) else {
-                    started = false
+        var tested: [SIMD3<Float>: Bool] = [:]  // cage edges share endpoints
+
+        // A point is hidden when a ray from the eye meets the model clearly before
+        // reaching it. Overlay points are snapped to the surface, so they hit
+        // themselves; the tolerance scales with depth to absorb float error and
+        // small drift after sculpting, without flicker.
+        func isVisible(_ p: SIMD3<Float>) -> Bool {
+            if let known = tested[p] { return known }
+            let offset = p - camera.eye
+            let depth = simd_length(offset)
+            var visible = true
+            if depth > 0, let hit = session.raycast(origin: camera.eye, direction: offset / depth) {
+                visible = simd_distance(hit.position, camera.eye) >= depth * (1 - Self.occlusionTolerance)
+            }
+            tested[p] = visible
+            return visible
+        }
+
+        func polyline(_ points: [SIMD3<Float>], shown: UIBezierPath, hidden: UIBezierPath) {
+            var previous: (point: CGPoint, visible: Bool)?
+            var lastTested = CGPoint.zero
+            var current: UIBezierPath?
+            for (i, p) in points.enumerated() {
+                guard let q = camera.project(p, viewSize: size) else {
+                    previous = nil
+                    current = nil
                     continue
                 }
-                if started { path.addLine(to: q) } else { path.move(to: q) }
-                started = true
+                // Dense strokes are tested every few points on screen; points in
+                // between take the state of the last tested one.
+                let visible: Bool
+                if let previous, i < points.count - 1,
+                   hypot(q.x - lastTested.x, q.y - lastTested.y) < Self.occlusionSpacing {
+                    visible = previous.visible
+                } else {
+                    visible = isVisible(p)
+                    lastTested = q
+                }
+                if let previous {
+                    let path = previous.visible && visible ? shown : hidden
+                    if path !== current { path.move(to: previous.point) }
+                    path.addLine(to: q)
+                    current = path
+                }
+                previous = (q, visible)
             }
         }
-        let guides = UIBezierPath()
-        for stroke in session.guideStrokes { polyline(stroke, into: guides) }
-        let cage = UIBezierPath()
+
+        let guides = UIBezierPath(), hiddenGuides = UIBezierPath()
+        for stroke in session.guideStrokes { polyline(stroke, shown: guides, hidden: hiddenGuides) }
+        let cage = UIBezierPath(), hiddenCage = UIBezierPath()
         let edges = session.retopoEdges
-        for i in stride(from: 0, to: edges.count - 1, by: 2) { polyline([edges[i], edges[i + 1]], into: cage) }
-        let live = UIBezierPath()
-        polyline(pathPoints, into: live)
+        for i in stride(from: 0, to: edges.count - 1, by: 2) {
+            polyline([edges[i], edges[i + 1]], shown: cage, hidden: hiddenCage)
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         guideLayer.path = guides.cgPath
+        hiddenGuideLayer.path = hiddenGuides.cgPath
         retopoLayer.path = cage.cgPath
+        hiddenRetopoLayer.path = hiddenCage.cgPath
+        CATransaction.commit()
+        refreshLivePath()
+    }
+
+    /// Fraction of a point's depth by which the model may lie in front of it
+    /// before the point counts as hidden.
+    private static let occlusionTolerance: Float = 0.005
+    /// Screen distance, in points, between occlusion tests along a polyline.
+    private static let occlusionSpacing: CGFloat = 4
+
+    /// The stroke being drawn always lies on the visible surface, so it skips
+    /// the occlusion test and can update on every touch cheaply.
+    private func refreshLivePath() {
+        guard let renderer else { return }
+        let live = UIBezierPath()
+        var started = false
+        for p in pathPoints {
+            guard let q = renderer.camera.project(p, viewSize: bounds.size) else {
+                started = false
+                continue
+            }
+            if started { live.addLine(to: q) } else { live.move(to: q) }
+            started = true
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         pathLayer.path = live.cgPath
         CATransaction.commit()
     }
@@ -287,7 +359,7 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
                 let ray = renderer.camera.ray(through: sample.preciseLocation(in: self), viewSize: bounds.size)
                 if let hit = session.raycast(origin: ray.origin, direction: ray.direction) { pathPoints.append(hit.position) }
             }
-            refreshOverlay()
+            refreshLivePath()
             return
         }
         for sample in samples {
