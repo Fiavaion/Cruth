@@ -19,6 +19,7 @@
 #include "cruth/primitives.hpp"
 #include "cruth/print_check.hpp"
 #include "cruth/subdivide.hpp"
+#include "cruth/voxel_remesh.hpp"
 
 using namespace cruth;
 
@@ -34,6 +35,8 @@ int usage() {
         "  check <in> [--json]                                   3D-print check (exit 2 if not printable)\n"
         "  repair <in> <out>                                     weld, fix winding, fill holes\n"
         "  subdivide <in> <out> [--levels N]                     Catmull-Clark\n"
+        "  remesh <in> <out> [--resolution N]                    voxel remesh (8..512, default 128)\n"
+        "  decimate <in> <out> --target N                        reduce to N triangles\n"
         "  convert <in> <out>                                    OBJ / STL / PLY by extension\n"
         "  sculpt <in> <script> <out>                            replay a stroke script\n"
         "  version\n"
@@ -44,7 +47,12 @@ int usage() {
         "  stroke            begin a stroke with the current brush\n"
         "  p X Y Z [P]       add a sample (P = pressure, default 1)\n"
         "  end               end the stroke\n"
-        "  undo | redo | subdivide [N] | mask-clear | mask-invert\n"
+        "  undo | redo | mask-clear | mask-invert\n"
+        "  subdivide [N]     add N multires levels and move to the top\n"
+        "  level K           sculpt at multires level K\n"
+        "  lock-base on|off  keep level 0 fixed when finer levels change\n"
+        "  remesh [N]        voxel remesh at resolution N\n"
+        "  decimate N        reduce to N triangles\n"
         "brush types: standard clay inflate smooth flatten pinch crease grab mask\n",
         stderr);
     return 64;
@@ -91,11 +99,12 @@ void print_report(const PrintReport& r, bool json) {
         std::printf(
             "{\"vertices\":%zu,\"faces\":%zu,\"triangles\":%zu,\"shells\":%zu,\"boundary_edges\":%zu,"
             "\"holes\":%zu,\"non_manifold_edges\":%zu,\"non_manifold_vertices\":%zu,\"inconsistent_edges\":%zu,"
-            "\"degenerate_faces\":%zu,\"unreferenced_vertices\":%zu,\"volume\":%.9g,\"surface_area\":%.9g,"
-            "\"size\":[%.9g,%.9g,%.9g],\"watertight\":%s,\"printable\":%s,"
-            "\"self_intersections_checked\":false,\"wall_thickness_checked\":false}\n",
+            "\"degenerate_faces\":%zu,\"unreferenced_vertices\":%zu,\"self_intersections\":%zu,"
+            "\"volume\":%.9g,\"surface_area\":%.9g,"
+            "\"size\":[%.9g,%.9g,%.9g],\"watertight\":%s,\"printable\":%s,\"wall_thickness_checked\":false}\n",
             r.vertices, r.faces, r.triangles, r.shells, r.boundary_edges, r.holes, r.non_manifold_edges,
-            r.non_manifold_vertices, r.inconsistent_edges, r.degenerate_faces, r.unreferenced_vertices, r.volume,
+            r.non_manifold_vertices, r.inconsistent_edges, r.degenerate_faces, r.unreferenced_vertices,
+            r.self_intersections, r.volume,
             r.surface_area, double(size.x), double(size.y), double(size.z), r.watertight() ? "true" : "false",
             r.printable() ? "true" : "false");
         return;
@@ -117,7 +126,8 @@ void print_report(const PrintReport& r, bool json) {
     line("inconsistent winding", r.inconsistent_edges);
     line("degenerate faces", r.degenerate_faces);
     line("unreferenced vertices", r.unreferenced_vertices);
-    std::printf("not yet checked: self-intersections, wall thickness, overhangs\n");
+    line("self-intersections", r.self_intersections);
+    std::printf("not yet checked: wall thickness, overhangs\n");
     std::printf("result: %s\n", r.printable() ? "PRINTABLE" : (r.watertight() ? "NEEDS REPAIR" : "NOT WATERTIGHT"));
 }
 
@@ -217,6 +227,24 @@ int run_sculpt(const std::string& in_path, const std::string& script_path, const
             in >> levels;
             auto s = doc.subdivide(levels);
             if (!s) return fail(where() + s.error().message);
+        } else if (cmd == "level") {
+            int level = 0;
+            in >> level;
+            auto s = doc.set_level(level);
+            if (!s) return fail(where() + s.error().message);
+        } else if (cmd == "lock-base") {
+            std::string on;
+            in >> on;
+            doc.set_base_locked(on == "on");
+        } else if (cmd == "remesh") {
+            VoxelRemeshOptions o;
+            in >> o.resolution;
+            auto r = doc.voxel_remesh(o);
+            if (!r) return fail(where() + r.error().message);
+        } else if (cmd == "decimate") {
+            std::size_t target = 0;
+            if (!(in >> target) || target < 4) return fail(where() + "expected 'decimate N' with N >= 4");
+            doc.decimate(target);
         } else if (cmd == "mask-clear") {
             doc.clear_mask();
         } else if (cmd == "mask-invert") {
@@ -275,10 +303,10 @@ int main(int argc, char** argv) {
         Mesh mesh = std::move(m).value();
         RepairLog log = repair_for_print(mesh);
         std::printf(
-            "welded %zu vertices, removed %zu degenerate and %zu duplicate faces, flipped %zu faces,\n"
-            "filled %zu holes, inverted %zu shells, removed %zu unused vertices\n",
-            log.welded_vertices, log.removed_degenerate_faces, log.removed_duplicate_faces, log.flipped_faces,
-            log.filled_holes, log.inverted_shells, log.removed_vertices);
+            "welded %zu vertices, removed %zu degenerate and %zu duplicate faces, split %zu non-manifold\n"
+            "vertices, flipped %zu faces, filled %zu holes, inverted %zu shells, removed %zu unused vertices\n",
+            log.welded_vertices, log.removed_degenerate_faces, log.removed_duplicate_faces, log.split_vertices,
+            log.flipped_faces, log.filled_holes, log.inverted_shells, log.removed_vertices);
         PrintReport r = check_printability(mesh);
         std::printf("result: %s\n", r.printable() ? "PRINTABLE" : "STILL NEEDS WORK (run check for details)");
         return save(mesh, args[1]);
@@ -291,6 +319,31 @@ int main(int argc, char** argv) {
         auto sub = subdivide_catmull_clark(m.value(), levels);
         if (!sub) return fail(sub.error().message);
         return save(sub.value(), args[1]);
+    }
+    if (cmd == "remesh") {
+        VoxelRemeshOptions o;
+        o.resolution = std::atoi(option(args, "--resolution", "128").c_str());
+        if (args.size() != 2) return usage();
+        auto m = load(args[0]);
+        if (!m) return fail(m.error().message);
+        VoxelRemeshStats stats;
+        auto out = voxel_remesh(m.value(), o, &stats);
+        if (!out) return fail(out.error().message);
+        std::printf("grid %d x %d x %d, voxel %.6g%s\n", stats.grid[0], stats.grid[1], stats.grid[2],
+                    double(stats.voxel_size), stats.input_decimated ? " (input decimated first)" : "");
+        return save(out.value(), args[1]);
+    }
+    if (cmd == "decimate") {
+        long target = std::atol(option(args, "--target", "0").c_str());
+        if (args.size() != 2 || target < 4) return usage();
+        auto m = load(args[0]);
+        if (!m) return fail(m.error().message);
+        DecimateOptions o;
+        o.target_triangles = static_cast<std::size_t>(target);
+        DecimateStats stats;
+        Mesh out = decimate(m.value(), o, &stats);
+        std::printf("%zu -> %zu triangles\n", stats.triangles_before, stats.triangles_after);
+        return save(out, args[1]);
     }
     if (cmd == "convert") {
         if (args.size() != 2) return usage();

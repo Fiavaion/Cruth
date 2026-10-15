@@ -93,7 +93,7 @@ typedef struct CruthRayHit {
 typedef struct CruthPrintReport {
     uint64_t vertices, faces, triangles, shells;
     uint64_t boundary_edges, holes, non_manifold_edges, non_manifold_vertices;
-    uint64_t inconsistent_edges, degenerate_faces, unreferenced_vertices;
+    uint64_t inconsistent_edges, degenerate_faces, unreferenced_vertices, self_intersections;
     double volume, surface_area;
     CruthVec3 bounds_min, bounds_max;
     bool watertight;
@@ -101,7 +101,7 @@ typedef struct CruthPrintReport {
 } CruthPrintReport;
 
 typedef struct CruthRepairLog {
-    uint64_t welded_vertices, removed_degenerate_faces, removed_duplicate_faces;
+    uint64_t welded_vertices, removed_degenerate_faces, removed_duplicate_faces, split_vertices;
     uint64_t flipped_faces, filled_holes, inverted_shells, removed_vertices;
 } CruthRepairLog;
 
@@ -145,9 +145,23 @@ CruthStatus cruth_stroke_end(CruthDocument* doc);
 void cruth_mask_clear(CruthDocument* doc);
 void cruth_mask_invert(CruthDocument* doc);
 
-/* Commands ----------------------------------------------------------------- */
+/* Multires ----------------------------------------------------------------- */
 
+/* Adds `levels` (1..4) subdivision levels on top of the stack and moves there. */
 CruthStatus cruth_document_subdivide(CruthDocument* doc, int32_t levels);
+int32_t cruth_document_level_count(const CruthDocument* doc);
+int32_t cruth_document_level(const CruthDocument* doc);
+CruthStatus cruth_document_set_level(CruthDocument* doc, int32_t level);
+void cruth_document_set_base_locked(CruthDocument* doc, bool locked);
+
+/* Topology commands (each resets multires) --------------------------------- */
+
+/* resolution: voxels along the longest side, 8..512. */
+CruthStatus cruth_document_voxel_remesh(CruthDocument* doc, int32_t resolution);
+CruthStatus cruth_document_decimate(CruthDocument* doc, uint64_t target_triangles);
+
+/* Print -------------------------------------------------------------------- */
+
 CruthStatus cruth_document_check_print(const CruthDocument* doc, CruthPrintReport* report);
 CruthStatus cruth_document_repair_print(CruthDocument* doc, CruthRepairLog* log);
 

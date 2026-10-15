@@ -31,9 +31,10 @@ struct PrintCheckView: View {
                         row("Inconsistent winding", r.inconsistent_edges)
                         row("Degenerate faces", r.degenerate_faces)
                         row("Unused vertices", r.unreferenced_vertices)
+                        row("Self-intersections", r.self_intersections)
                     }
                     Section {
-                        Text("Self-intersections, wall thickness and overhangs are not checked yet.")
+                        Text("Wall thickness and overhangs are not checked yet.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -60,7 +61,8 @@ struct PrintCheckView: View {
         guard let log = session.repairForPrint() else { return }
         repairSummary = """
             Welded \(log.welded_vertices) vertices, removed \(log.removed_degenerate_faces) degenerate and \
-            \(log.removed_duplicate_faces) duplicate faces, flipped \(log.flipped_faces) faces, filled \
+            \(log.removed_duplicate_faces) duplicate faces, split \(log.split_vertices) non-manifold vertices, \
+            flipped \(log.flipped_faces) faces, filled \
             \(log.filled_holes) holes, turned \(log.inverted_shells) shells right side out.
             """
         report = session.printReport()

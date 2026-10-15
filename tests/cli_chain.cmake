@@ -1,4 +1,5 @@
-# Runs the headless phase-0 chain: new -> sculpt -> subdivide -> check -> convert.
+# Runs the headless phase-0 chain: new -> sculpt (with multires) -> subdivide -> check ->
+# convert -> voxel remesh -> decimate, checking printability along the way.
 file(MAKE_DIRECTORY ${WORK})
 function(run)
   execute_process(COMMAND ${ARGV} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
@@ -13,3 +14,7 @@ run(${CLI} subdivide ${WORK}/sculpted.ply ${WORK}/smooth.obj --levels 1)
 run(${CLI} check ${WORK}/smooth.obj)
 run(${CLI} convert ${WORK}/smooth.obj ${WORK}/smooth.stl)
 run(${CLI} check ${WORK}/smooth.stl --json)
+run(${CLI} remesh ${WORK}/smooth.obj ${WORK}/remeshed.obj --resolution 96)
+run(${CLI} check ${WORK}/remeshed.obj)
+run(${CLI} decimate ${WORK}/remeshed.obj ${WORK}/low.obj --target 5000)
+run(${CLI} check ${WORK}/low.obj)

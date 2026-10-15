@@ -74,6 +74,11 @@ final class SculptSession: ObservableObject {
     @Published private(set) var canRedo = false
     @Published private(set) var vertexCount = 0
     @Published private(set) var triangleCount = 0
+    @Published private(set) var level = 0
+    @Published private(set) var levelCount = 1
+    @Published var lockBaseLevel = false {
+        didSet { if let document { cruth_document_set_base_locked(document, lockBaseLevel) } }
+    }
     @Published var message: String?
 
     /// Bumped when a new mesh replaces the old one, so the viewport can re-frame.
@@ -127,6 +132,7 @@ final class SculptSession: ObservableObject {
         }
         if let document { cruth_document_destroy(document) }
         document = doc
+        cruth_document_set_base_locked(doc, lockBaseLevel)
         documentGeneration += 1
         refresh()
     }
@@ -197,14 +203,40 @@ final class SculptSession: ObservableObject {
         refresh()
     }
 
+    /// Adds a multires level on top of the stack and moves to it (PRD S-01).
     func subdivide() {
         guard let document else { return }
         if cruth_document_vertex_count(document) > 2_000_000 {
             message = "Mesh is already dense; subdividing again would exceed the phase-0 budget."
             return
         }
-        let status = cruth_document_subdivide(document, 1)
+        run(cruth_document_subdivide(document, 1))
+    }
+
+    func stepLevel(by delta: Int) {
+        guard let document else { return }
+        let target = Int32(level + delta)
+        guard target >= 0, target < Int32(levelCount) else { return }
+        run(cruth_document_set_level(document, target))
+    }
+
+    /// Rebuilds the mesh as an even, closed quad surface (PRD S-02). Drops multires levels.
+    func voxelRemesh(resolution: Int32) {
+        guard let document else { return }
+        run(cruth_document_voxel_remesh(document, resolution))
+        if message == nil { message = "Remeshed at \(resolution) voxels" }
+    }
+
+    /// Reduces the triangle count by a fraction (PRD S-04). Drops multires levels.
+    func decimate(keeping fraction: Double) {
+        guard let document else { return }
+        let target = max(4, UInt64(Double(cruth_document_triangle_count(document)) * fraction))
+        run(cruth_document_decimate(document, target))
+    }
+
+    private func run(_ status: CruthStatus) {
         if status == CRUTH_OK {
+            message = nil
             refresh()
         } else {
             report(status)
@@ -261,6 +293,8 @@ final class SculptSession: ObservableObject {
         canRedo = cruth_can_redo(document)
         vertexCount = cruth_document_vertex_count(document)
         triangleCount = cruth_document_triangle_count(document)
+        level = Int(cruth_document_level(document))
+        levelCount = Int(cruth_document_level_count(document))
     }
 
     private func report(_ status: CruthStatus) {

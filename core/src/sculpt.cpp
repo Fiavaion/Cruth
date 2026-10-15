@@ -141,6 +141,7 @@ struct Sculptor::Impl {
     std::vector<Index> hit_v;
     std::vector<float> hit_w;
     std::vector<Vec3> new_pos;
+    std::vector<Vec3> smooth_tmp;
     std::vector<Index> changed;
 
     void rebuild() {
@@ -273,6 +274,11 @@ struct Sculptor::Impl {
             return;
         }
 
+        if (brush.type == BrushType::Smooth) {
+            smooth(s);
+            return;
+        }
+
         // Brush frame: weighted average normal and centre of the affected area.
         Vec3 area_n, area_c;
         float wsum = 0;
@@ -314,15 +320,7 @@ struct Sculptor::Impl {
                     q = p - area_n * (d * std::min(1.0f, w));
                     break;
                 }
-                case BrushType::Smooth: {
-                    auto nb = adjacency.of(v);
-                    if (nb.empty()) break;
-                    Vec3 avg;
-                    for (Index u : nb) avg += mesh.positions[u];
-                    avg /= static_cast<float>(nb.size());
-                    q = lerp(p, avg, std::min(1.0f, w));
-                    break;
-                }
+                case BrushType::Smooth:  // handled by smooth()
                 case BrushType::Pinch:
                 case BrushType::Crease: {
                     Vec3 to_c = c - p;
@@ -338,6 +336,41 @@ struct Sculptor::Impl {
             new_pos[i] = q;
         }
         // Write after computing so Smooth reads consistent neighbour positions.
+        for (std::size_t i = 0; i < hit_v.size(); ++i) {
+            if (!(new_pos[i] == mesh.positions[hit_v[i]])) set_position(hit_v[i], new_pos[i]);
+        }
+    }
+
+    // Taubin lambda|mu smoothing: a shrinking Laplacian step followed by an
+    // inflating one, which removes noise without the volume loss of plain
+    // Laplacian smoothing. Neighbours outside the brush keep their positions.
+    void smooth(float s) {
+        constexpr float kLambda = 0.5f, kMu = -0.53f;
+        smooth_tmp.resize(mesh.vertex_count());
+        const std::uint32_t id = next_scratch();
+        for (Index v : hit_v) scratch_stamp[v] = id;
+        auto at = [&](Index u, bool second) {
+            return second && scratch_stamp[u] == id ? smooth_tmp[u] : mesh.positions[u];
+        };
+        auto step = [&](bool second, float factor) {
+            new_pos.resize(hit_v.size());
+            for (std::size_t i = 0; i < hit_v.size(); ++i) {
+                const Index v = hit_v[i];
+                const Vec3 p = at(v, second);
+                auto nb = adjacency.of(v);
+                if (nb.empty()) {
+                    new_pos[i] = p;
+                    continue;
+                }
+                Vec3 avg;
+                for (Index u : nb) avg += at(u, second);
+                avg /= static_cast<float>(nb.size());
+                new_pos[i] = p + (avg - p) * (factor * std::min(1.0f, hit_w[i] * s));
+            }
+            for (std::size_t i = 0; i < hit_v.size(); ++i) smooth_tmp[hit_v[i]] = new_pos[i];
+        };
+        step(false, kLambda);
+        step(true, kMu);
         for (std::size_t i = 0; i < hit_v.size(); ++i) {
             if (!(new_pos[i] == mesh.positions[hit_v[i]])) set_position(hit_v[i], new_pos[i]);
         }

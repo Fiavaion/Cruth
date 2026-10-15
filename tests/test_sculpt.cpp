@@ -101,7 +101,7 @@ TEST(x_symmetry_mirrors_the_stroke) {
     CHECK(max_radius(m) > 1.01);
 }
 
-TEST(smooth_brush_reduces_roughness) {
+TEST(smooth_brush_reduces_roughness_without_shrinking) {
     Document doc(make_quad_sphere(4, 1.0f));
     BrushSettings bump;
     bump.type = BrushType::Crease;
@@ -109,16 +109,24 @@ TEST(smooth_brush_reduces_roughness) {
     bump.strength = 1.0f;
     stroke(doc, bump, {-0.3f, 1, 0}, {0.3f, 1, 0});
     auto spread = [&] { return max_radius(doc.mesh()) - min_radius(doc.mesh()); };
-    double rough = spread();
+    const double rough = spread();
     BrushSettings smooth;
     smooth.type = BrushType::Smooth;
     smooth.radius = 0.4f;
     smooth.strength = 1.0f;
-    // One pass: plain Laplacian smoothing also shrinks convex areas, so repeated
-    // passes trade crease depth for overall shrinkage (volume-preserving
-    // smoothing is on the roadmap).
-    stroke(doc, smooth, {-0.3f, 1, 0}, {0.3f, 1, 0});
+    double previous_floor = min_radius(doc.mesh());
+    for (int i = 0; i < 4; ++i) {
+        stroke(doc, smooth, {-0.3f, 1, 0}, {0.3f, 1, 0});
+        // Taubin smoothing keeps lifting the crease instead of sinking the area.
+        CHECK(min_radius(doc.mesh()) > previous_floor);
+        previous_floor = min_radius(doc.mesh());
+    }
     CHECK(spread() < rough * 0.8);
+
+    // Smoothing an already smooth sphere barely changes its size.
+    Document clean(make_quad_sphere(4, 1.0f));
+    for (int i = 0; i < 4; ++i) stroke(clean, smooth, {-0.3f, 1, 0}, {0.3f, 1, 0});
+    CHECK(min_radius(clean.mesh()) > 0.995);
 }
 
 TEST(mask_protects_vertices) {

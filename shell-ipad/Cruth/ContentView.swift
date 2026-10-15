@@ -72,7 +72,8 @@ struct ContentView: View {
 
             Spacer()
 
-            Button { session.subdivide() } label: { Label("Subdivide", systemImage: "square.grid.3x3") }
+            topologyMenu
+            levelStepper
             Button { showPrintCheck = true } label: { Label("Print Check", systemImage: "printer") }
             Menu {
                 Button("Clear Mask") { session.clearMask() }
@@ -94,6 +95,41 @@ struct ContentView: View {
         .buttonStyle(.bordered)
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// Multires, voxel remesh and decimation (PRD S-01, S-02, S-04).
+    private var topologyMenu: some View {
+        Menu {
+            Button("Subdivide (Add Level)", systemImage: "square.grid.3x3") { session.subdivide() }
+            Toggle("Lock Base Level", isOn: $session.lockBaseLevel)
+            Divider()
+            Menu("Voxel Remesh", systemImage: "cube") {
+                ForEach([64, 128, 192, 256, 384], id: \.self) { resolution in
+                    Button("\(resolution) voxels") { session.voxelRemesh(resolution: Int32(resolution)) }
+                }
+            }
+            Menu("Decimate", systemImage: "triangle") {
+                Button("Keep 50%") { session.decimate(keeping: 0.5) }
+                Button("Keep 25%") { session.decimate(keeping: 0.25) }
+                Button("Keep 10%") { session.decimate(keeping: 0.1) }
+            }
+        } label: {
+            Label("Topology", systemImage: "square.grid.3x3")
+        }
+    }
+
+    private var levelStepper: some View {
+        HStack(spacing: 2) {
+            Button { session.stepLevel(by: -1) } label: { Image(systemName: "minus") }
+                .disabled(session.level == 0)
+            Text("L\(session.level)/\(session.levelCount - 1)")
+                .font(.caption.monospacedDigit())
+                .frame(minWidth: 36)
+            Button { session.stepLevel(by: 1) } label: { Image(systemName: "plus") }
+                .disabled(session.level >= session.levelCount - 1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Multires level")
     }
 
     private var statusBar: some View {

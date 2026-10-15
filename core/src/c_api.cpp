@@ -276,6 +276,39 @@ CruthStatus cruth_document_subdivide(CruthDocument* doc, int32_t levels) {
     });
 }
 
+int32_t cruth_document_level_count(const CruthDocument* doc) { return doc ? doc->doc.level_count() : 0; }
+int32_t cruth_document_level(const CruthDocument* doc) { return doc ? doc->doc.level() : 0; }
+
+CruthStatus cruth_document_set_level(CruthDocument* doc, int32_t level) {
+    if (!doc) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        auto status = doc->doc.set_level(level);
+        return status ? CRUTH_OK : from_error(status.error());
+    });
+}
+
+void cruth_document_set_base_locked(CruthDocument* doc, bool locked) {
+    if (doc) doc->doc.set_base_locked(locked);
+}
+
+CruthStatus cruth_document_voxel_remesh(CruthDocument* doc, int32_t resolution) {
+    if (!doc || resolution < 8 || resolution > 512) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "resolution must be 8..512");
+    return guarded([&] {
+        cruth::VoxelRemeshOptions options;
+        options.resolution = resolution;
+        auto result = doc->doc.voxel_remesh(options);
+        return result ? CRUTH_OK : from_error(result.error());
+    });
+}
+
+CruthStatus cruth_document_decimate(CruthDocument* doc, uint64_t target_triangles) {
+    if (!doc || target_triangles < 4) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "target must be >= 4 triangles");
+    return guarded([&] {
+        doc->doc.decimate(static_cast<std::size_t>(target_triangles));
+        return CRUTH_OK;
+    });
+}
+
 CruthStatus cruth_document_check_print(const CruthDocument* doc, CruthPrintReport* report) {
     if (!doc || !report) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
     return guarded([&] {
@@ -292,6 +325,7 @@ CruthStatus cruth_document_check_print(const CruthDocument* doc, CruthPrintRepor
         report->inconsistent_edges = r.inconsistent_edges;
         report->degenerate_faces = r.degenerate_faces;
         report->unreferenced_vertices = r.unreferenced_vertices;
+        report->self_intersections = r.self_intersections;
         report->volume = r.volume;
         report->surface_area = r.surface_area;
         cruth::Bounds b = r.bounds;
@@ -309,8 +343,15 @@ CruthStatus cruth_document_repair_print(CruthDocument* doc, CruthRepairLog* log)
     return guarded([&] {
         auto r = doc->doc.repair_for_print();
         if (log) {
-            *log = {r.welded_vertices,  r.removed_degenerate_faces, r.removed_duplicate_faces, r.flipped_faces,
-                    r.filled_holes,     r.inverted_shells,          r.removed_vertices};
+            *log = {};
+            log->welded_vertices = r.welded_vertices;
+            log->removed_degenerate_faces = r.removed_degenerate_faces;
+            log->removed_duplicate_faces = r.removed_duplicate_faces;
+            log->split_vertices = r.split_vertices;
+            log->flipped_faces = r.flipped_faces;
+            log->filled_holes = r.filled_holes;
+            log->inverted_shells = r.inverted_shells;
+            log->removed_vertices = r.removed_vertices;
         }
         return CRUTH_OK;
     });

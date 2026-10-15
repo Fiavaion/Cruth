@@ -12,15 +12,17 @@ The PRD's phase 0 is to prove the C++ core headless before the UI grows. This re
 
 | Area | What works today |
 | --- | --- |
-| Mesh kernel | Indexed polygon mesh; half-edge connectivity that rejects non-manifold input cleanly (S-01) |
-| Subdivision | Catmull-Clark with smooth boundary rules; quad-sphere, cube and plane primitives |
-| Brushes | Standard, Clay, Inflate, Smooth, Flatten, Pinch, Crease, Grab and Mask, with falloff curves, pressure curves, dab spacing, X/Y/Z mirror and radial symmetry (B-01, B-02, B-04, N-02, N-03) |
+| Mesh kernel | Indexed polygon mesh; half-edge connectivity that rejects non-manifold input cleanly; BVH with refit for picking, closest-point and overlap queries |
+| Multires | Up to 8 Catmull-Clark levels; sculpt at any level, with edits propagated up and down; lockable level 0 (S-01) |
+| Voxel remesh | Closed, even quad surface at 8–512 voxels; merges overlapping parts, closes small holes, dissolves buried surfaces; multithreaded (S-02) |
+| Decimation | Quadric edge collapse to a target triangle count, boundary-preserving and manifold-safe (S-04) |
+| Brushes | Standard, Clay, Inflate, Smooth (volume-preserving Taubin), Flatten, Pinch, Crease, Grab and Mask, with falloff curves, pressure curves, dab spacing, X/Y/Z mirror and radial symmetry (B-01, B-02, B-04, N-02, N-03) |
 | Undo | Exact per-stroke deltas plus whole-mesh steps for topology changes (L-04, linear for now) |
 | Files | OBJ, STL (ASCII and binary) and PLY (ASCII and binary) import and export (P-06, P-07) |
-| 3D-print | Check for holes, non-manifold edges and vertices, winding, degenerate faces, shells, volume and size; repair by welding, re-winding, filling holes and turning shells outward (X-01, X-02) |
+| 3D-print | Check for holes, non-manifold edges and vertices, winding, degenerate faces, self-intersections, shells, volume and size; repair by welding, splitting non-manifold vertices, re-winding, filling holes and turning shells outward (X-01, X-02) |
 | C API | `core/include/cruth/cruth.h`: the exception-free boundary every shell uses |
-| CLI | `cruth-cli`: create, sculpt from a stroke script, subdivide, check, repair and convert, all headless |
-| iPad shell | SwiftUI and Metal viewport; raw Apple Pencil input with pressure and coalesced touches; finger orbit, pan and zoom; two- and three-finger tap for undo and redo; Pencil double-tap and squeeze; hover brush cursor; Files import and export; print check sheet |
+| CLI | `cruth-cli`: create, sculpt from a stroke script (including multires levels), subdivide, remesh, decimate, check, repair and convert, all headless |
+| iPad shell | SwiftUI and Metal viewport; raw Apple Pencil input with pressure and coalesced touches; finger orbit, pan and zoom; two- and three-finger tap for undo and redo; Pencil double-tap and squeeze; hover brush cursor; multires level stepper; voxel remesh and decimate menu; Files import and export; print check sheet |
 
 ## Repository layout
 
@@ -55,7 +57,9 @@ Options: `-DCRUTH_SANITIZE=ON` for ASan and UBSan, and `-DCRUTH_WARNINGS_AS_ERRO
 ./build/tools/cruth-cli/cruth-cli sculpt base.obj tests/data/head_blockout.stroke head.obj
 ./build/tools/cruth-cli/cruth-cli subdivide head.obj head_smooth.obj
 ./build/tools/cruth-cli/cruth-cli check head_smooth.obj
-./build/tools/cruth-cli/cruth-cli convert head_smooth.obj head.stl
+./build/tools/cruth-cli/cruth-cli remesh head_smooth.obj head_remeshed.obj --resolution 192
+./build/tools/cruth-cli/cruth-cli decimate head_remeshed.obj head_low.obj --target 20000
+./build/tools/cruth-cli/cruth-cli convert head_low.obj head.stl
 ```
 
 Run `cruth-cli` with no arguments for the stroke-script syntax.

@@ -95,29 +95,35 @@ bool Mesh::is_valid() const {
 }
 
 VertexAdjacency VertexAdjacency::build(const Mesh& mesh) {
-    // Collect directed edge pairs in both directions, then sort and unique per row.
-    std::vector<std::pair<Index, Index>> pairs;
-    pairs.reserve(mesh.corner_count() * 2);
+    // Counting sort: each corner contributes its two polygon neighbours to its
+    // vertex's row; rows are then de-duplicated in place.
+    const std::size_t n = mesh.vertex_count();
+    std::vector<Index> start(n + 1, 0);
+    for (Index v : mesh.face_indices()) start[v + 1] += 2;
+    for (std::size_t i = 1; i <= n; ++i) start[i] += start[i - 1];
+    std::vector<Index> raw(start[n]);
+    std::vector<Index> fill(start.begin(), start.end() - 1);
     for (std::size_t f = 0; f < mesh.face_count(); ++f) {
         auto fv = mesh.face(f);
         for (std::size_t i = 0; i < fv.size(); ++i) {
-            Index a = fv[i], b = fv[(i + 1) % fv.size()];
-            if (a == b) continue;
-            pairs.emplace_back(a, b);
-            pairs.emplace_back(b, a);
+            const Index v = fv[i];
+            raw[fill[v]++] = fv[(i + fv.size() - 1) % fv.size()];
+            raw[fill[v]++] = fv[(i + 1) % fv.size()];
         }
     }
-    std::sort(pairs.begin(), pairs.end());
-    pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
 
     VertexAdjacency adj;
-    adj.offsets.assign(mesh.vertex_count() + 1, 0);
-    adj.neighbors.reserve(pairs.size());
-    for (const auto& [a, b] : pairs) {
-        ++adj.offsets[a + 1];
-        adj.neighbors.push_back(b);
+    adj.offsets.assign(n + 1, 0);
+    adj.neighbors.reserve(raw.size() / 2 + n);
+    for (std::size_t v = 0; v < n; ++v) {
+        auto first = raw.begin() + start[v], last = raw.begin() + start[v + 1];
+        std::sort(first, last);
+        last = std::unique(first, last);
+        for (auto it = first; it != last; ++it) {
+            if (*it != v) adj.neighbors.push_back(*it);
+        }
+        adj.offsets[v + 1] = static_cast<Index>(adj.neighbors.size());
     }
-    for (std::size_t i = 1; i < adj.offsets.size(); ++i) adj.offsets[i] += adj.offsets[i - 1];
     return adj;
 }
 

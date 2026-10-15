@@ -2,6 +2,7 @@ add_executable(cruth_tests
   main.cpp
   test_mesh.cpp
   test_sculpt.cpp
+  test_topology.cpp
   c_header_check.c
 )
 target_link_libraries(cruth_tests PRIVATE Cruth::core cruth_warnings)

@@ -2,6 +2,7 @@
 #include "cruth/print_check.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <deque>
 #include <numeric>
 #include <unordered_map>
@@ -94,7 +95,7 @@ double signed_volume(const Mesh& mesh, const std::vector<Index>& corners) {
 
 }  // namespace
 
-PrintReport check_printability(const Mesh& mesh) {
+PrintReport check_printability(const Mesh& mesh, const TriangleBVH* bvh) {
     PrintReport r;
     r.vertices = mesh.vertex_count();
     r.faces = mesh.face_count();
@@ -177,7 +178,135 @@ PrintReport check_printability(const Mesh& mesh) {
         for (Index c = 0; c < end - begin; ++c) components += fan.find(c) == c;
         if (components > 1) ++r.non_manifold_vertices;
     }
+
+    if (bvh) {
+        r.self_intersections = count_self_intersections(*bvh);
+    } else {
+        TriangleBVH local(mesh);
+        r.self_intersections = count_self_intersections(local);
+    }
     return r;
+}
+
+std::size_t split_non_manifold_vertices(Mesh& mesh) {
+    const auto edges = edge_uses(mesh);
+    auto manifold = [&](Index a, Index b) {
+        auto it = edges.find(undirected_key(a, b));
+        return it != edges.end() && it->second.faces == 2;
+    };
+
+    // Vertex -> incident faces.
+    std::vector<Index> offsets(mesh.vertex_count() + 1, 0);
+    for (Index v : mesh.face_indices()) ++offsets[v + 1];
+    for (std::size_t i = 1; i < offsets.size(); ++i) offsets[i] += offsets[i - 1];
+    std::vector<Index> incident(mesh.corner_count());
+    {
+        std::vector<Index> fill(offsets.begin(), offsets.end() - 1);
+        for (Index f = 0; f < mesh.face_count(); ++f) {
+            for (Index v : mesh.face(f)) incident[fill[v]++] = f;
+        }
+    }
+
+    // Around a non-manifold edge, sort its faces by angle and pair neighbours
+    // that traverse it in opposite directions: each pair is one sheet.
+    std::unordered_map<std::uint64_t, std::vector<Index>> crowded;
+    for (Index f = 0; f < mesh.face_count(); ++f) {
+        auto fv = mesh.face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            Index a = fv[i], b = fv[(i + 1) % fv.size()];
+            auto it = edges.find(undirected_key(a, b));
+            if (it != edges.end() && it->second.faces > 2) crowded[undirected_key(a, b)].push_back(f);
+        }
+    }
+    std::unordered_map<std::uint64_t, std::vector<std::pair<Index, Index>>> sheet_pairs;
+    for (auto& [key, list] : crowded) {
+        const auto a = Index(key >> 32), b = Index(key & 0xFFFFFFFFu);
+        if (list.size() % 2) continue;
+        const Vec3 pa = mesh.positions[a], axis = normalize(mesh.positions[b] - pa);
+        Vec3 ref = normalize(cross(axis, std::abs(axis.x) < 0.9f ? Vec3{1, 0, 0} : Vec3{0, 1, 0}));
+        const Vec3 ref2 = cross(axis, ref);
+        auto forward = [&](Index f) {  // traverses a -> b
+            auto fv = mesh.face(f);
+            for (std::size_t i = 0; i < fv.size(); ++i) {
+                if (fv[i] == a && fv[(i + 1) % fv.size()] == b) return true;
+            }
+            return false;
+        };
+        std::vector<std::pair<float, Index>> around;
+        for (Index f : list) {
+            Vec3 d = mesh.face_centroid(f) - pa;
+            d -= axis * dot(d, axis);
+            around.push_back({std::atan2(dot(d, ref2), dot(d, ref)), f});
+        }
+        std::sort(around.begin(), around.end());
+        const std::size_t n = around.size();
+        bool paired = false;
+        for (std::size_t offset = 0; offset < 2 && !paired; ++offset) {
+            bool ok = true;
+            for (std::size_t i = 0; i < n && ok; i += 2) {
+                ok = forward(around[(i + offset) % n].second) != forward(around[(i + offset + 1) % n].second);
+            }
+            if (!ok) continue;
+            auto& pairs = sheet_pairs[key];
+            for (std::size_t i = 0; i < n; i += 2) {
+                pairs.push_back({around[(i + offset) % n].second, around[(i + offset + 1) % n].second});
+            }
+            paired = true;
+        }
+        if (!paired) {
+            // Nearly coplanar faces can defeat the angular order; any pairing of
+            // forward with backward faces is still manifold.
+            std::vector<Index> fwd, bwd;
+            for (const auto& [angle, f] : around) (forward(f) ? fwd : bwd).push_back(f);
+            if (fwd.size() == bwd.size()) {
+                auto& pairs = sheet_pairs[key];
+                for (std::size_t i = 0; i < fwd.size(); ++i) pairs.push_back({fwd[i], bwd[i]});
+            }
+        }
+    }
+
+    auto faces = face_lists(mesh);
+    std::size_t added = 0;
+    std::unordered_map<Index, Index> first_face_with;
+    std::unordered_map<Index, Index> slot_of_face;
+    for (Index v = 0; v < offsets.size() - 1; ++v) {
+        const Index begin = offsets[v], end = offsets[v + 1];
+        if (end - begin < 2) continue;
+        // Faces around v are in one fan when they share a manifold edge at v.
+        UnionFind fan(end - begin);
+        first_face_with.clear();
+        slot_of_face.clear();
+        for (Index c = begin; c < end; ++c) slot_of_face[incident[c]] = c - begin;
+        for (Index c = begin; c < end; ++c) {
+            const auto fv = mesh.face(incident[c]);
+            for (std::size_t i = 0; i < fv.size(); ++i) {
+                if (fv[i] != v) continue;
+                for (Index nb : {fv[(i + fv.size() - 1) % fv.size()], fv[(i + 1) % fv.size()]}) {
+                    if (manifold(v, nb)) {
+                        auto [it, inserted] = first_face_with.emplace(nb, c - begin);
+                        if (!inserted) fan.unite(c - begin, it->second);
+                    } else if (auto sp = sheet_pairs.find(undirected_key(v, nb)); sp != sheet_pairs.end()) {
+                        for (auto [f, g] : sp->second) fan.unite(slot_of_face[f], slot_of_face[g]);
+                    }
+                }
+            }
+        }
+        std::unordered_map<Index, Index> copy_of_root;
+        for (Index c = begin; c < end; ++c) {
+            const Index root = fan.find(c - begin);
+            if (root == fan.find(0)) continue;  // the first fan keeps the original
+            auto [it, inserted] = copy_of_root.emplace(root, kInvalidIndex);
+            if (inserted) {
+                it->second = mesh.add_vertex(mesh.positions[v]);
+                ++added;
+            }
+            for (Index& u : faces[incident[c]]) {
+                if (u == v) u = it->second;
+            }
+        }
+    }
+    if (added) mesh = rebuild(mesh, faces);
+    return added;
 }
 
 RepairLog repair_for_print(Mesh& mesh, const RepairOptions& opt) {
@@ -230,6 +359,11 @@ RepairLog repair_for_print(Mesh& mesh, const RepairOptions& opt) {
     }
 
     mesh = rebuild(mesh, faces);
+
+    if (opt.split_non_manifold) {
+        log.split_vertices = split_non_manifold_vertices(mesh);
+        faces = face_lists(mesh);
+    }
 
     if (opt.unify_orientation) {
         // Breadth-first over manifold edges; flip a neighbour that traverses the

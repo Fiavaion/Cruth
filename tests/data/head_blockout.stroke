@@ -40,3 +40,17 @@ end
 # Try the undo stack: drop the last smooth pass and put it back.
 undo
 redo
+
+# Multires: add two levels, add detail at the top, adjust the form at level 1.
+subdivide 2
+brush crease radius 0.06 strength 0.6 symmetry x
+stroke
+p 0.10 0.30 0.95
+p 0.20 0.31 0.93
+end
+level 1
+brush inflate radius 0.3 strength 0.4 symmetry x
+stroke
+p 0.0 0.6 0.8
+end
+level 2
