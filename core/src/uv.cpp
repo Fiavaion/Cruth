@@ -391,8 +391,11 @@ void normalise_chart(const Mesh& mesh, Chart& chart) {
     for (auto& p : chart.uv) p = p - lo;
     chart.size = hi - lo;
     // Non-finite input positions: collapse the chart to a point so packing
-    // stays bounded and the UVs stay finite.
-    if (!std::isfinite(chart.size.x) || !std::isfinite(chart.size.y)) {
+    // stays bounded and the UVs stay finite. min/max skip NaN, so check the
+    // points as well as the box.
+    const bool finite = std::all_of(chart.uv.begin(), chart.uv.end(),
+                                    [](const Vec2& p) { return std::isfinite(p.x) && std::isfinite(p.y); });
+    if (!finite || !std::isfinite(chart.size.x) || !std::isfinite(chart.size.y)) {
         for (auto& p : chart.uv) p = {};
         chart.size = {};
     }
@@ -678,7 +681,7 @@ Result<UVSet> auto_unwrap(const Mesh& mesh, const UnwrapOptions& options, Unwrap
     float pad = 0;
     bool padding_met = false;
     for (int pass = 0; pass < 6 && !padding_met; ++pass) {
-        const float pad_fraction = float(options.padding_texels) * 2.0f / float(resolution);
+        const float pad_fraction = std::max(0.0f, float(options.padding_texels)) * 2.0f / float(resolution);
         pad = pad_fraction * side * (pass < 5 ? 1.02f : 1.1f);
         key = -1;
         side = pack_tiles(per_tile, pad, packer, key);

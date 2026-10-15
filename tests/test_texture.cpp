@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include "cruth/bake.hpp"
@@ -400,6 +401,15 @@ TEST(unwrap_degenerate_faces_terminate) {
     }
 }
 
+// A NaN vertex must not leak NaN UVs: min/max skip NaN, so the chart's box alone looks finite.
+TEST(unwrap_nan_vertex_gives_finite_uvs) {
+    Mesh m = make_quad_sphere(2, 1.0f);
+    m.positions[0].x = std::numeric_limits<float>::quiet_NaN();
+    auto r = auto_unwrap(m, {});
+    REQUIRE(r.is_ok());
+    for (const auto& t : r.value().uvs) CHECK(std::isfinite(t.x) && std::isfinite(t.y));
+}
+
 // Packing cost must not explode with chart count (it once took 40 s here).
 TEST(unwrap_many_charts_is_fast) {
     const Mesh m = make_quad_sphere(4, 1.0f);
@@ -413,7 +423,7 @@ TEST(unwrap_many_charts_is_fast) {
         REQUIRE(r.is_ok());
         CHECK_EQ(stats.charts, m.face_count());
 #ifdef NDEBUG
-        CHECK(seconds < 2.0);  // optimised builds only: Debug and ASan run many times slower
+        CHECK(seconds < 0.5);  // optimised builds only. MaxRects alone takes ~5 s here, so this pins the skyline path
 #else
         (void)seconds;
 #endif
