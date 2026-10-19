@@ -251,11 +251,20 @@ const TriangleBVH& Document::bvh() const {
     if (bvh_topology_ != topology_revision_) {
         bvh_.build(mesh_);
         bvh_topology_ = topology_revision_;
-        bvh_geometry_ = geometry_revision();
+        ++bvh_updates_.builds;
     } else if (bvh_geometry_ != geometry_revision()) {
-        bvh_.refit(mesh_.positions);
-        bvh_geometry_ = geometry_revision();
+        // Strokes and their undo move a few vertices each: refit only around
+        // them. If the journal lost track (rebuild, overflow), refit it all.
+        auto moved = sculptor_.moved_since(bvh_journal_);
+        if (moved && bvh_.refit(mesh_.positions, *moved)) {
+            ++bvh_updates_.partial_refits;
+        } else {
+            if (!moved) bvh_.refit(mesh_.positions);
+            ++bvh_updates_.full_refits;
+        }
     }
+    bvh_geometry_ = geometry_revision();
+    bvh_journal_ = sculptor_.journal_end();
     return bvh_;
 }
 

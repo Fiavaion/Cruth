@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 
 namespace cruth {
@@ -10,6 +11,11 @@ namespace cruth {
 namespace {
 
 constexpr std::uint32_t kLeafSize = 4;
+constexpr std::uint32_t kNoParent = ~std::uint32_t(0);
+// A partial refit costs several times more per moved vertex than the full
+// sweep does per vertex (leaf lookups, ancestor walks, a sort), so past this
+// fraction of the vertices the full refit is cheaper.
+constexpr std::size_t kPartialRefitDivisor = 16;
 
 // Slab test; returns the entry distance or +inf on a miss.
 float ray_box(const Bounds& b, Vec3 o, Vec3 inv_dir, float t_max) {
@@ -110,6 +116,10 @@ void TriangleBVH::build(const Mesh& mesh) {
     const auto n = static_cast<std::uint32_t>(triangles_.size());
     order_.resize(n);
     nodes_.clear();
+    parent_.clear();
+    vertex_leaf_offsets_.clear();
+    vertex_leaves_.clear();
+    node_stamp_.clear();
     if (n == 0) return;
     for (std::uint32_t i = 0; i < n; ++i) order_[i] = i;
 
@@ -156,24 +166,103 @@ void TriangleBVH::build(const Mesh& mesh) {
     }
 }
 
+void TriangleBVH::refit_node(std::size_t i) {
+    Node& n = nodes_[i];
+    Bounds b;
+    if (n.count > 0) {
+        for (std::uint32_t k = 0; k < n.count; ++k) {
+            for (Index v : triangles_[order_[n.first + k]]) b.extend(positions_[v]);
+        }
+    } else {
+        b = nodes_[n.first].box;
+        b.extend(nodes_[n.first + 1].box.lo);
+        b.extend(nodes_[n.first + 1].box.hi);
+    }
+    n.box = b;
+}
+
 void TriangleBVH::refit(const std::vector<Vec3>& positions) {
     positions_ = positions;
     // Children always have larger indices than their parent, so a reverse
     // sweep updates children before parents.
-    for (std::size_t i = nodes_.size(); i-- > 0;) {
-        Node& n = nodes_[i];
-        Bounds b;
-        if (n.count > 0) {
-            for (std::uint32_t k = 0; k < n.count; ++k) {
-                for (Index v : triangles_[order_[n.first + k]]) b.extend(positions_[v]);
-            }
-        } else {
-            b = nodes_[n.first].box;
-            b.extend(nodes_[n.first + 1].box.lo);
-            b.extend(nodes_[n.first + 1].box.hi);
-        }
-        n.box = b;
+    for (std::size_t i = nodes_.size(); i-- > 0;) refit_node(i);
+}
+
+void TriangleBVH::prepare_partial_refit() {
+    const auto node_count = static_cast<std::uint32_t>(nodes_.size());
+    parent_.assign(node_count, kNoParent);
+    for (std::uint32_t i = 0; i < node_count; ++i) {
+        if (nodes_[i].count == 0) parent_[nodes_[i].first] = parent_[nodes_[i].first + 1] = i;
     }
+    // Leaves are visited in index order, so a vertex's repeated entries for
+    // one leaf are consecutive and `last` drops them.
+    const std::size_t vertex_count = positions_.size();
+    std::vector<std::uint32_t> last(vertex_count, kNoParent);
+    auto for_each_leaf_vertex = [&](auto&& fn) {
+        for (std::uint32_t i = 0; i < node_count; ++i) {
+            const Node& n = nodes_[i];
+            for (std::uint32_t k = 0; k < n.count; ++k) {
+                for (Index v : triangles_[order_[n.first + k]]) {
+                    if (last[v] == i) continue;
+                    last[v] = i;
+                    fn(v, i);
+                }
+            }
+        }
+    };
+    vertex_leaf_offsets_.assign(vertex_count + 1, 0);
+    for_each_leaf_vertex([&](Index v, std::uint32_t) { ++vertex_leaf_offsets_[v + 1]; });
+    for (std::size_t v = 0; v < vertex_count; ++v) vertex_leaf_offsets_[v + 1] += vertex_leaf_offsets_[v];
+    vertex_leaves_.resize(vertex_leaf_offsets_.back());
+    std::vector<std::uint32_t> fill(vertex_leaf_offsets_.begin(), vertex_leaf_offsets_.end() - 1);
+    std::fill(last.begin(), last.end(), kNoParent);
+    for_each_leaf_vertex([&](Index v, std::uint32_t leaf) { vertex_leaves_[fill[v]++] = leaf; });
+    node_stamp_.assign(node_count, 0);
+    stamp_ = 0;
+}
+
+bool TriangleBVH::refit(const std::vector<Vec3>& positions, std::span<const Index> moved) {
+    if (nodes_.empty() || positions.size() != positions_.size() ||
+        moved.size() > positions_.size() / kPartialRefitDivisor) {
+        refit(positions);
+        return false;
+    }
+    if (vertex_leaf_offsets_.empty()) prepare_partial_refit();
+    if (++stamp_ == 0) {
+        std::fill(node_stamp_.begin(), node_stamp_.end(), 0);
+        stamp_ = 1;
+    }
+    // Dirty leaves: every leaf with a triangle on a moved vertex. Leaves
+    // without one see the same positions as at their last refit, so their
+    // boxes are already what a full refit would compute.
+    dirty_.clear();
+    for (Index v : moved) {
+        if (v >= positions_.size()) {
+            refit(positions);
+            return false;
+        }
+        positions_[v] = positions[v];
+        for (std::uint32_t i = vertex_leaf_offsets_[v]; i < vertex_leaf_offsets_[v + 1]; ++i) {
+            const std::uint32_t leaf = vertex_leaves_[i];
+            if (node_stamp_[leaf] == stamp_) continue;
+            node_stamp_[leaf] = stamp_;
+            dirty_.push_back(leaf);
+        }
+    }
+    // Their ancestors. A stamped inner node already has its whole chain to the
+    // root stamped, so each walk stops at the first one.
+    const std::size_t leaves = dirty_.size();
+    for (std::size_t i = 0; i < leaves; ++i) {
+        for (std::uint32_t p = parent_[dirty_[i]]; p != kNoParent && node_stamp_[p] != stamp_; p = parent_[p]) {
+            node_stamp_[p] = stamp_;
+            dirty_.push_back(p);
+        }
+    }
+    // Children before parents, as in the full sweep. Min and max are exact, so
+    // each recomputed box is bit-identical to the full refit's.
+    std::sort(dirty_.begin(), dirty_.end(), std::greater<>());
+    for (std::uint32_t i : dirty_) refit_node(i);
+    return true;
 }
 
 std::optional<RayHit> TriangleBVH::raycast(Vec3 origin, Vec3 direction, float max_distance) const {
