@@ -69,6 +69,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             framedGeneration = session.documentGeneration
             let b = session.bounds()
             camera.frame(center: b.center, radius: b.radius)
+            view.setNeedsLayout()  // the overlay was laid out for the old camera
         }
 
         inFlight.wait()
