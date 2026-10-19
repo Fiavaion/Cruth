@@ -335,6 +335,31 @@ final class CruthUITests: XCTestCase {
         XCTAssertTrue(waitForFile(autosaveFile, timeout: 15), "a stroke was not autosaved within the delay")
     }
 
+    func testInterruptedRestoreSetsAsideOnlyThatAutosave() throws {
+        let marker = autosaveDirectory.appendingPathComponent("restoring")
+        sculptAndBackground()
+        app.terminate()
+        // As if the last launch died while loading or drawing this autosave.
+        try Data().write(to: marker)
+
+        launchApp()
+        waitForVertexCount(initialVertices, timeout: 30)
+        let message = app.staticTexts["statusMessage"]
+        XCTAssertTrue(message.waitForExistence(timeout: 10), "the interrupted restore was not reported")
+        XCTAssertEqual(message.label, "The last session could not be restored and was set aside")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "the stale restore marker was kept")
+
+        // A fresh autosave made after that must restore on the next launch.
+        sculptAndBackground()
+        app.terminate()
+        launchApp()
+        let restored = app.staticTexts["statusMessage"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 30), "no message after the second relaunch")
+        XCTAssertTrue(restored.label.hasPrefix("Restored your last session"), "unexpected message: \(restored.label)")
+        XCTAssertTrue(waitForFile(marker, toExist: false, timeout: 15),
+                      "the restore was never confirmed, so the next launch would set it aside")
+    }
+
     func testCorruptAutosaveStartsOnTheDefaultSphere() throws {
         app.terminate()
         // A truncated PLY: the header promises 1,000 vertices, the body holds four bytes.
@@ -498,6 +523,17 @@ final class CruthUITests: XCTestCase {
         Int(stats.label.prefix { $0.isNumber }) ?? -1
     }
 
+    /// One finger stroke, then Home; returns once the autosave file exists.
+    private func sculptAndBackground(file: StaticString = #filePath, line: UInt = #line) {
+        setFingerSculpting(true, file: file, line: line)
+        drag(from: CGVector(dx: 0.42, dy: 0.5), to: CGVector(dx: 0.58, dy: 0.5))
+        waitFor(undoButton, "isEnabled == true", timeout: 10, "finger stroke did not record an undo step",
+                file: file, line: line)
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(waitForFile(autosaveFile, timeout: 20), "backgrounding did not write the autosave",
+                      file: file, line: line)
+    }
+
     /// Opens Print Check, reads the volume ("Volume, 4.18") and closes it again.
     private func printCheckVolume(file: StaticString = #filePath, line: UInt = #line) -> String {
         app.buttons["printCheckButton"].tap()
@@ -522,10 +558,10 @@ final class CruthUITests: XCTestCase {
 
     /// The test runner and the simulated app share the Mac's file system, so the
     /// test can watch the app's autosave folder directly.
-    private func waitForFile(_ url: URL, timeout: TimeInterval) -> Bool {
+    private func waitForFile(_ url: URL, toExist: Bool = true, timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if FileManager.default.fileExists(atPath: url.path) { return true }
+            if FileManager.default.fileExists(atPath: url.path) == toExist { return true }
             Thread.sleep(forTimeInterval: 0.25)
         }
         return false
