@@ -41,6 +41,7 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     private let penLayer = CAShapeLayer()  // pending quad-pen taps
     private let hiddenPenLayer = CAShapeLayer()  // ones behind the model: hollow, faint, dashed
     private var pathPoints: [SIMD3<Float>] = []
+    private var drawnOverlay: OverlayKey?
 
     // Retopology tools that take taps or drags rather than strokes: the tool and
     // where the touch landed, whether it has moved too far to be a tap, and the
@@ -111,16 +112,32 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
 
     /// Called by SwiftUI when the session publishes a change.
     func sessionDidChange() {
-        refreshOverlay()
+        setNeedsLayout()
         setNeedsDisplay()
+    }
+
+    /// The overlay refreshes here, so the gesture callbacks and session changes
+    /// of one frame (pan and pinch together, a stroke's end and the change it
+    /// publishes) ask for it with setNeedsLayout and it runs once, before the frame.
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        refreshOverlay()
     }
 
     /// Projects guides and the retopology cage into the view, splitting each
     /// polyline into the parts in front of the model and the parts behind it.
-    func refreshOverlay() {
+    private func refreshOverlay() {
         // While a background command owns the document, raycasts fail and the
         // viewport keeps its last frame, so keep the overlay that matches it.
         guard let renderer, !session.isBusy else { return }
+        // Every published change lands here, slider drags included; the
+        // occlusion raycasts are only worth redoing when what they see changed.
+        let key = overlayKey(camera: renderer.camera)
+        if key == drawnOverlay {
+            refreshLivePath()
+            return
+        }
+        drawnOverlay = key
         let camera = renderer.camera
         let size = bounds.size
         var tested: [SIMD3<Float>: Bool] = [:]  // cage edges share endpoints
@@ -194,6 +211,27 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         hiddenRetopoLayer.path = hiddenCage.cgPath
         CATransaction.commit()
         refreshLivePath()
+    }
+
+    /// Everything the overlay is drawn from. The arrays compare by storage
+    /// first, so an unchanged cage or guide list costs nothing to check.
+    private struct OverlayKey: Equatable {
+        var camera: OrbitCamera
+        var size: CGSize
+        var generation: Int
+        var geometry: UInt64
+        var topology: UInt64
+        var guides: [[SIMD3<Float>]]
+        var cage: [SIMD3<Float>]
+        var pen: [SIMD3<Float>]
+    }
+
+    private func overlayKey(camera: OrbitCamera) -> OverlayKey {
+        let document = session.document
+        return OverlayKey(camera: camera, size: bounds.size, generation: session.documentGeneration,
+                          geometry: document.map { cruth_document_geometry_revision($0) } ?? 0,
+                          topology: document.map { cruth_document_topology_revision($0) } ?? 0,
+                          guides: session.guideStrokes, cage: session.retopoEdges, pen: session.quadPenPending)
     }
 
     /// Fraction of a point's depth by which the model may lie in front of it
@@ -275,23 +313,23 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     @objc private func handleOrbit(_ g: UIPanGestureRecognizer) {
         let t = g.translation(in: self)
         g.setTranslation(.zero, in: self)
-        defer { refreshOverlay() }
         renderer?.camera.orbit(dx: Float(t.x), dy: Float(t.y))
+        setNeedsLayout()
         setNeedsDisplay()
     }
 
     @objc private func handlePan(_ g: UIPanGestureRecognizer) {
         let t = g.translation(in: self)
         g.setTranslation(.zero, in: self)
-        defer { refreshOverlay() }
         renderer?.camera.pan(dx: Float(t.x), dy: Float(t.y), viewHeight: Float(bounds.height))
+        setNeedsLayout()
         setNeedsDisplay()
     }
 
     @objc private func handlePinch(_ g: UIPinchGestureRecognizer) {
-        defer { refreshOverlay() }
         renderer?.camera.zoom(by: Float(g.scale))
         g.scale = 1
+        setNeedsLayout()
         setNeedsDisplay()
     }
 
@@ -417,17 +455,16 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
             touchTool = nil
             touchOrigin = nil
             slide = nil
-            refreshOverlay()
         } else {
             // Guide or retopology stroke: hand the surface path to the session.
             let points = pathPoints
             pathPoints.removeAll()
             session.completePath(points, viewDirection: renderer?.camera.forward ?? SIMD3(0, 0, -1))
-            refreshOverlay()
         }
         strokeTouch = nil
         grabPlane = nil
         cursor.isHidden = true
+        setNeedsLayout()
         setNeedsDisplay()
     }
 

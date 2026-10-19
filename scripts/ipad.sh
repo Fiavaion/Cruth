@@ -10,6 +10,10 @@
 #   ./scripts/ipad.sh open       open the project in Xcode
 #   ./scripts/ipad.sh clean      delete the app build products
 #
+# build, run and device take --release to build the Release configuration
+# (Swift optimised) instead of Debug, to judge real speed. The C++ core is
+# optimised in both.
+#
 # Environment: CRUTH_SIMULATOR picks a simulator by name (default: the first
 # available iPad); CRUTH_DEVICE picks a device by name or identifier.
 # The test result bundle lands in build/ipad/UITests.xcresult.
@@ -20,6 +24,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 shell="$root/shell-ipad"
 derived="$root/build/ipad"
 bundle_id_default="org.cruth.app"
+configuration=Debug
 
 fail() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 [[ "$(uname -s)" == "Darwin" ]] || fail "the iPad app builds on macOS with Xcode only"
@@ -58,16 +63,24 @@ xcb() {
 build_sim() {
   generate >&2
   local id; id="$(simulator_id)"
-  xcb -configuration Debug -destination "id=$id" CODE_SIGNING_ALLOWED=NO build >&2
+  xcb -configuration "$configuration" -destination "id=$id" CODE_SIGNING_ALLOWED=NO build >&2
   echo "$id"
 }
 
-case "${1:-help}" in
+command="${1:-help}"
+if [[ "$command" == build || "$command" == run || "$command" == device ]]; then
+  for arg in "${@:2}"; do
+    [[ "$arg" == --release ]] || fail "unknown option for $command: $arg"
+    configuration=Release
+  done
+fi
+
+case "$command" in
   generate) generate; echo "generated $shell/Cruth.xcodeproj" ;;
   build) build_sim >/dev/null ;;
   run)
     id="$(build_sim)"
-    app="$derived/Build/Products/Debug-iphonesimulator/Cruth.app"
+    app="$derived/Build/Products/$configuration-iphonesimulator/Cruth.app"
     # Boot and wait until the simulator is ready: installing into a simulator
     # that is still booting silently loses the app on a cold start.
     xcrun simctl bootstatus "$id" -b >/dev/null
@@ -87,8 +100,8 @@ case "${1:-help}" in
     ;;
   device)
     generate
-    xcb -configuration Debug -destination 'generic/platform=iOS' -allowProvisioningUpdates build
-    app="$derived/Build/Products/Debug-iphoneos/Cruth.app"
+    xcb -configuration "$configuration" -destination 'generic/platform=iOS' -allowProvisioningUpdates build
+    app="$derived/Build/Products/$configuration-iphoneos/Cruth.app"
     device="${CRUTH_DEVICE:-}"
     if [[ -z "$device" ]]; then
       device="$(xcrun devicectl list devices 2>/dev/null | grep -i ipad \
@@ -100,5 +113,5 @@ case "${1:-help}" in
     ;;
   open) generate; open "$shell/Cruth.xcodeproj" ;;
   clean) rm -rf "$derived"; echo "removed $derived" ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
