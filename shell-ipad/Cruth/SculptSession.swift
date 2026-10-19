@@ -121,11 +121,7 @@ final class SculptSession: ObservableObject {
     @Published private(set) var level = 0
     @Published private(set) var levelCount = 1
     @Published var lockBaseLevel = false {
-        didSet {
-            guard let document else { return }
-            waitForAutosave()
-            cruth_document_set_base_locked(document, lockBaseLevel)
-        }
+        didSet { if let document { cruth_document_set_base_locked(document, lockBaseLevel) } }
     }
     @Published var message: String?
     /// True while a long command runs off the main thread; input is ignored meanwhile.
@@ -178,7 +174,6 @@ final class SculptSession: ObservableObject {
 
     deinit {
         if let memoryWarningObserver { NotificationCenter.default.removeObserver(memoryWarningObserver) }
-        autosaveQueue.sync {}  // a save may still be reading the document
         if let retopo { cruth_retopo_destroy(retopo) }
         if let document { cruth_document_destroy(document) }
     }
@@ -188,10 +183,10 @@ final class SculptSession: ObservableObject {
     func setMode(_ newMode: WorkMode) {
         guard !isBusy, newMode != mode else { return }
         Log.input.info("Mode \(mode.title) -> \(newMode.title)")
+        if inStroke { endStroke() }  // a sculpt stroke still under a finger ends here
         if mode == .retopo { cancelRetopo() }
         if newMode == .retopo {
             guard let document else { return }
-            waitForAutosave()
             var handle: OpaquePointer?
             let status = cruth_retopo_begin(document, &handle)
             guard status == CRUTH_OK, let handle else {
@@ -376,13 +371,17 @@ final class SculptSession: ObservableObject {
         Log.session.info("New sculpt")
         if mode == .retopo { cancelRetopo() }
         guideStrokes.removeAll()  // they described the old surface
-        waitForAutosave()
+        if inStroke { endStroke() }
         autosaveTimer?.cancel()
         autosaveTimer = nil
+        // A write still queued would bring the deleted autosave back.
+        waitForAutosave()
         autosaveStore.clear()
         loadDefaultSphere()
         dirty = false
+        dirtySince = nil
         savePending = false
+        restoreUnconfirmed = false
         message = nil
     }
 
@@ -398,13 +397,35 @@ final class SculptSession: ObservableObject {
         Log.autosave.info("Restore started")
         let start = Date()
         guard let doc = autosaveStore.load() else {
-            message = "The last session could not be restored and was set aside"
+            announce("The last session could not be restored and was set aside")
             return false
         }
         replace(with: doc, status: CRUTH_OK)
+        restoreUnconfirmed = true
         Log.autosave.info("Restore ended in \(Self.elapsed(since: start)): \(vertexCount) vertices, \(triangleCount) triangles")
-        message = Self.restoredMessage
+        announce(Self.restoredMessage)
         return true
+    }
+
+    /// True from a restore until the GPU has drawn the restored mesh.
+    private(set) var restoreUnconfirmed = false
+
+    /// Called by the renderer when a frame of the restored mesh has completed.
+    func restoredFrameDrawn() {
+        guard restoreUnconfirmed else { return }
+        restoreUnconfirmed = false
+        let store = autosaveStore
+        // A couple of seconds more covers whatever follows the first frame of a dense mesh.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { store.confirmRestore() }
+    }
+
+    /// Shows a status message and reads it out with VoiceOver. At launch the
+    /// announcement waits a moment, since VoiceOver drops one made before the UI exists.
+    private func announce(_ text: String) {
+        message = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            UIAccessibility.post(notification: .announcement, argument: text)
+        }
     }
 
     /// The autosave keeps the current level's mesh only (see AutosaveStore).
@@ -415,7 +436,9 @@ final class SculptSession: ObservableObject {
         guard !isBusy else { return }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        Log.commands.info("Import \(url.lastPathComponent) started")
+        // File names can be personal, so the log gets the type and size only.
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path(percentEncoded: false)))?[.size] as? Int ?? 0
+        Log.commands.info("Import .\(url.pathExtension.lowercased()), \(size) bytes, started")
         let start = Date()
         var doc: OpaquePointer?
         let status = cruth_document_load(url.path(percentEncoded: false), &doc)
@@ -457,7 +480,6 @@ final class SculptSession: ObservableObject {
             message = error.localizedDescription
             return
         }
-        waitForAutosave()
         isBusy = true
         busyLabel = "Baking \(textureSize) px maps…"
         let path = folder.path(percentEncoded: false)
@@ -489,7 +511,6 @@ final class SculptSession: ObservableObject {
             report(status, "Load document")
             return
         }
-        waitForAutosave()
         if let document { cruth_document_destroy(document) }
         document = doc
         cruth_document_set_base_locked(doc, lockBaseLevel)
@@ -510,31 +531,29 @@ final class SculptSession: ObservableObject {
     }
 
     func beginStroke() {
-        guard let document, !isBusy else { return }
+        guard let document, !isBusy, !inStroke else { return }
         var b = coreBrush
         strokeFailureLogged = false
-        waitForAutosave()
         let status = cruth_stroke_begin(document, &b)
         inStroke = status == CRUTH_OK
         logStrokeFailure(status, "begin")
     }
 
     func addSample(_ position: SIMD3<Float>, pressure: Float) {
-        guard let document else { return }
+        guard let document, inStroke else { return }
         var sample = CruthStrokeSample(position: CruthVec3(x: position.x, y: position.y, z: position.z),
                                        pressure: pressure)
         logStrokeFailure(cruth_stroke_add_sample(document, &sample), "sample")
     }
 
+    /// Ends the stroke beginStroke opened, if any; otherwise does nothing.
     func endStroke() {
-        guard let document else { return }
+        guard let document, inStroke else { return }
+        inStroke = false
         logStrokeFailure(cruth_stroke_end(document), "end")
         refresh()
-        if inStroke {
-            inStroke = false
-            markDirty()
-            autosaveIfPending()
-        }
+        markDirty()
+        autosaveIfPending()
     }
 
     private func logStrokeFailure(_ status: CruthStatus, _ step: String) {
@@ -578,7 +597,6 @@ final class SculptSession: ObservableObject {
             return
         }
         guard let document else { return }
-        waitForAutosave()
         guard cruth_undo(document) else { return }
         Log.input.info("Undo")
         refresh()
@@ -592,7 +610,6 @@ final class SculptSession: ObservableObject {
             return
         }
         guard let document else { return }
-        waitForAutosave()
         guard cruth_redo(document) else { return }
         Log.input.info("Redo")
         refresh()
@@ -614,7 +631,6 @@ final class SculptSession: ObservableObject {
         let target = Int32(level + delta)
         guard target >= 0, target < Int32(levelCount) else { return }
         Log.input.info("Level \(level) -> \(target)")
-        waitForAutosave()
         run(cruth_document_set_level(document, target), "Set level")
     }
 
@@ -668,7 +684,6 @@ final class SculptSession: ObservableObject {
                                  _ work: @escaping (OpaquePointer) -> CruthStatus,
                                  then: (() -> Void)? = nil) {
         guard let document, !isBusy else { return }
-        waitForAutosave()
         isBusy = true
         busyLabel = label
         Log.commands.info("\(command) started on \(vertexCount) vertices, \(triangleCount) triangles")
@@ -707,14 +722,12 @@ final class SculptSession: ObservableObject {
 
     func clearMask() {
         guard let document, !isBusy else { return }
-        waitForAutosave()
         cruth_mask_clear(document)
         refresh()
     }
 
     func invertMask() {
         guard let document, !isBusy else { return }
-        waitForAutosave()
         cruth_mask_invert(document)
         refresh()
     }
@@ -735,7 +748,6 @@ final class SculptSession: ObservableObject {
         var log = CruthRepairLog()
         Log.commands.info("Repair for print started")
         let start = Date()
-        waitForAutosave()
         let status = cruth_document_repair_print(document, &log)
         guard status == CRUTH_OK else {
             report(status, "Repair for print")
@@ -795,47 +807,59 @@ final class SculptSession: ObservableObject {
 
     // MARK: Autosave
 
-    /// Edit-driven autosaves start at least this far apart...
-    private static let autosaveInterval: TimeInterval = AutosaveStore.delayOverride ?? 30
-    /// ...and no sooner than this after the edit that made the document dirty.
+    /// Edit-driven saves are debounced: one runs once edits pause for the quiet delay...
     private static let autosaveQuietDelay: TimeInterval = AutosaveStore.delayOverride ?? 3
+    /// ...but no later than this after the first unsaved edit, so non-stop work is saved too...
+    private static let autosaveMaxDelay: TimeInterval = (AutosaveStore.delayOverride ?? 30) * 2
+    /// ...and never sooner than this after the previous save started.
+    private static let autosaveMinInterval: TimeInterval = AutosaveStore.delayOverride ?? 30
 
     private let autosaveStore = AutosaveStore.standard()
-    /// Saves run here, off the main thread. A save only reads the document, so the
-    /// main thread keeps drawing and picking meanwhile (also reads), but every
-    /// edit first calls `waitForAutosave`. A save never starts during a stroke or
-    /// a background command, so no edit can be half-done when one starts.
+    /// Writes run here, off the main thread. They write a snapshot of the mesh
+    /// taken on the main thread (cruth_document_snapshot, a copy), never the
+    /// document itself, so edits never wait for a write. A snapshot is never
+    /// taken during a stroke or a background command, so it never holds half an edit.
     private let autosaveQueue = DispatchQueue(label: "org.cruth.autosave", qos: .utility)
     private var isSaving = false
-    /// The document changed since the last autosave started.
+    /// The document changed since the last autosave snapshot.
     private var dirty = false
+    /// When the oldest unsaved edit was made.
+    private var dirtySince: Date?
     /// A save fell due during a stroke, command or other save; it runs when that ends.
     private var savePending = false
+    /// Keeps the app running in the background while a pending save waits for a command.
+    private var pendingSaveTask: BackgroundTask?
     private var inStroke = false
     private var lastSaveStart = Date.distantPast
     private var autosaveTimer: DispatchWorkItem?
 
     private func markDirty() {
         dirty = true
+        if dirtySince == nil { dirtySince = Date() }
         scheduleAutosave()
     }
 
+    /// (Re)starts the debounce timer.
     private func scheduleAutosave() {
-        guard autosaveTimer == nil else { return }
-        let wait = max(Self.autosaveQuietDelay, Self.autosaveInterval - Date().timeIntervalSince(lastSaveStart))
+        autosaveTimer?.cancel()
+        let now = Date()
+        let due = max(min(now.addingTimeInterval(Self.autosaveQuietDelay),
+                          (dirtySince ?? now).addingTimeInterval(Self.autosaveMaxDelay)),
+                      lastSaveStart.addingTimeInterval(Self.autosaveMinInterval))
         let item = DispatchWorkItem { [weak self] in
             self?.autosaveTimer = nil
             self?.autosave(reason: "edits")
         }
         autosaveTimer = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, due.timeIntervalSince(now)), execute: item)
     }
 
     private func autosaveIfPending() {
         if savePending { autosave(reason: "deferred") }
     }
 
-    /// Saves the document if it changed since the last save, off the main thread.
+    /// Saves the document if it changed since the last save: a snapshot on the
+    /// main thread, the write on the autosave queue.
     func autosave(reason: String) {
         guard dirty, let document else { return }
         if isBusy || inStroke || isSaving {
@@ -844,30 +868,54 @@ final class SculptSession: ObservableObject {
                 Log.autosave.info("Autosave (\(reason)) deferred: \(why)")
             }
             savePending = true
+            // Leaving the foreground during a command: stay alive until the save can run.
+            if pendingSaveTask == nil, UIApplication.shared.applicationState != .active {
+                pendingSaveTask = BackgroundTask(name: "Autosave pending")
+            }
             return
         }
         autosaveTimer?.cancel()
         autosaveTimer = nil
+        let snapshotStart = Date()
+        var snapshot: OpaquePointer?
+        let status = cruth_document_snapshot(document, &snapshot)
+        let snapshotTime = Self.elapsed(since: snapshotStart)
+        let task = BackgroundTask(name: "Autosave")
+        pendingSaveTask?.end()
+        pendingSaveTask = nil
+        guard status == CRUTH_OK, let snapshot else {
+            Log.autosave.error("Autosave (\(reason)) snapshot failed: \(String(cString: cruth_status_string(status))): " +
+                               String(cString: cruth_last_error()))
+            savePending = false
+            scheduleAutosave()  // dirty stays set: try again later
+            task.end()
+            return
+        }
         isSaving = true
         dirty = false
+        dirtySince = nil
         savePending = false
-        lastSaveStart = Date()
+        lastSaveStart = snapshotStart
         let generation = documentGeneration
         let store = autosaveStore
         let vertices = vertexCount
-        let task = BackgroundTask(name: "Autosave")
         autosaveQueue.async {
             let start = Date()
-            let result = Result { try store.write(document) }
+            let result = Result { try store.write(snapshot) }
+            cruth_mesh_destroy(snapshot)
             let seconds = String(format: "%.3f s", Date().timeIntervalSince(start))
             DispatchQueue.main.async {
                 self.isSaving = false
                 switch result {
                 case .success(let bytes):
-                    Log.autosave.info("Autosave (\(reason)) ended in \(seconds): \(vertices) vertices, \(bytes) bytes")
+                    Log.autosave.info("Autosave (\(reason)): snapshot \(snapshotTime) on the main thread, " +
+                                      "write \(seconds): \(vertices) vertices, \(bytes) bytes")
                 case .failure(let error):
                     Log.autosave.error("Autosave (\(reason)) failed after \(seconds): \(error)")
-                    if generation == self.documentGeneration { self.dirty = true }
+                    if generation == self.documentGeneration, !self.dirty {
+                        self.dirty = true
+                        self.dirtySince = Date()
+                    }
                 }
                 task.end()
                 if self.savePending { self.autosave(reason: "deferred") } else if self.dirty { self.scheduleAutosave() }
@@ -875,13 +923,13 @@ final class SculptSession: ObservableObject {
         }
     }
 
-    /// Every edit calls this before touching the document: it blocks until a
-    /// running autosave has finished reading it.
+    /// Blocks until queued autosave writes have finished. Only New Sculpt needs
+    /// it, so a late write cannot bring back the autosave it deletes.
     private func waitForAutosave() {
         guard isSaving else { return }
         let start = Date()
         autosaveQueue.sync {}
-        Log.autosave.info("An edit waited \(Self.elapsed(since: start)) for the autosave")
+        Log.autosave.info("New Sculpt waited \(Self.elapsed(since: start)) for an autosave write")
     }
 
     /// The plain-text summary that Share Diagnostics puts next to the log files.

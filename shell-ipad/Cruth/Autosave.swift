@@ -31,14 +31,18 @@ struct AutosaveStore {
     let directory: URL
 
     var file: URL { directory.appendingPathComponent("autosave.ply") }
-    /// Exists while a restore is loading. Found at launch, it means the last
-    /// restore never finished (the app was killed or crashed in it), so the
-    /// autosave is set aside rather than retried forever.
-    private var restoreMarker: URL { directory.appendingPathComponent("restoring") }
+    /// Written before a restore loads and removed by `confirmRestore` once the
+    /// restored mesh has been drawn for a while. Found at launch, it means the
+    /// last restore never got that far (the app was killed or crashed loading or
+    /// drawing it), so that autosave is set aside rather than retried forever.
+    var restoreMarker: URL { directory.appendingPathComponent("restoring") }
     private static let tempPrefix = "autosave-"
+    private static let brokenPrefix = "broken-"
+    private static let brokenKept = 3
 
-    /// Debug builds: `-cruthAutosaveDelay <seconds>` replaces both the interval between
-    /// edit-driven saves and the quiet delay before one, so UI tests can control them.
+    /// Debug builds: `-cruthAutosaveDelay <seconds>` replaces the quiet delay and the
+    /// minimum interval of edit-driven saves (the maximum delay becomes twice it),
+    /// so UI tests can control them.
     static var delayOverride: TimeInterval? {
         #if DEBUG
         let value = UserDefaults.standard.double(forKey: "cruthAutosaveDelay")
@@ -79,13 +83,14 @@ struct AutosaveStore {
 
     var exists: Bool { FileManager.default.fileExists(atPath: file.path) }
 
-    /// Writes the document to a temp file beside the autosave, then swaps it in,
-    /// so a crash mid-write leaves the previous autosave intact. Returns the size
-    /// in bytes. Call it only while nothing edits the document.
-    func write(_ document: OpaquePointer) throws -> Int {
+    /// Writes a snapshot (cruth_document_snapshot) to a temp file beside the
+    /// autosave, then swaps it in, so a crash mid-write leaves the previous
+    /// autosave intact. Returns the size in bytes. The snapshot is independent of
+    /// the document, so this runs off the main thread while editing goes on.
+    func write(_ snapshot: OpaquePointer) throws -> Int {
         let fm = FileManager.default
         let temp = directory.appendingPathComponent("\(Self.tempPrefix)\(UUID().uuidString).ply")
-        let status = cruth_document_save(document, temp.path(percentEncoded: false))
+        let status = cruth_mesh_save(snapshot, temp.path(percentEncoded: false))
         guard status == CRUTH_OK else {
             let detail = String(cString: cruth_last_error())
             try? fm.removeItem(at: temp)
@@ -106,31 +111,42 @@ struct AutosaveStore {
 
     /// Loads the autosave. A missing file gives nil; an unreadable one, or one
     /// whose last restore never finished, is moved aside and also gives nil.
+    /// On success the restore marker stays until `confirmRestore`.
     func load() -> OpaquePointer? {
         let fm = FileManager.default
+        let interrupted = fm.fileExists(atPath: restoreMarker.path)
+        // The marker belongs to one restore attempt: drop it whatever happens next.
+        try? fm.removeItem(at: restoreMarker)
         guard exists else { return nil }
-        if fm.fileExists(atPath: restoreMarker.path) {
+        if interrupted {
             Log.autosave.error("The last restore did not finish")
             moveAside()
             return nil
         }
         fm.createFile(atPath: restoreMarker.path, contents: nil)
-        defer { try? fm.removeItem(at: restoreMarker) }
         var doc: OpaquePointer?
         let status = cruth_document_load(file.path(percentEncoded: false), &doc)
         guard status == CRUTH_OK, let doc else {
             Log.autosave.error("Restore failed: \(String(cString: cruth_status_string(status))): " +
                                String(cString: cruth_last_error()))
+            try? fm.removeItem(at: restoreMarker)
             moveAside()
             return nil
         }
         guard cruth_document_triangle_count(doc) > 0 else {
             Log.autosave.error("Restore failed: the autosave has no faces")
             cruth_document_destroy(doc)
+            try? fm.removeItem(at: restoreMarker)
             moveAside()
             return nil
         }
         return doc
+    }
+
+    /// The restored mesh loaded and drew without killing the app.
+    func confirmRestore() {
+        try? FileManager.default.removeItem(at: restoreMarker)
+        Log.autosave.info("Restore confirmed")
     }
 
     /// Keeps a broken autosave as broken-<date>.ply for later inspection.
@@ -138,7 +154,7 @@ struct AutosaveStore {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd-HHmmss"
-        let target = directory.appendingPathComponent("broken-\(formatter.string(from: Date())).ply")
+        let target = directory.appendingPathComponent("\(Self.brokenPrefix)\(formatter.string(from: Date())).ply")
         do {
             try? FileManager.default.removeItem(at: target)
             try FileManager.default.moveItem(at: file, to: target)
@@ -146,6 +162,18 @@ struct AutosaveStore {
         } catch {
             Log.autosave.error("Cannot move the autosave aside: \(error.localizedDescription); deleting it")
             try? FileManager.default.removeItem(at: file)
+        }
+        pruneBroken()
+    }
+
+    /// Keeps the newest few broken autosaves; their dated names sort oldest first.
+    private func pruneBroken() {
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [])
+            .filter { $0.hasPrefix(Self.brokenPrefix) && $0.hasSuffix(".ply") }
+            .sorted()
+        for name in names.dropLast(Self.brokenKept) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+            Log.autosave.info("Deleted old \(name)")
         }
     }
 
