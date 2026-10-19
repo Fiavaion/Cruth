@@ -322,7 +322,10 @@ Result<RetopoMesh::QuadPenTap> RetopoMesh::quad_pen_tap(Vec3 p) {
     do {
         float len = 0;
         for (std::size_t i = 0; i < 4; ++i) len += distance(pen_[order[i]].position, pen_[order[(i + 1) % 4]].position);
-        if (len < best_len) {
+        // Only a clearly shorter order replaces an earlier one: ties (a square
+        // and its reverse) keep the order closest to the taps on every
+        // compiler, whatever its floating-point contraction.
+        if (len < best_len * (1.0f - 1e-5f)) {
             best_len = len;
             best = order;
         }
