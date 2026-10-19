@@ -121,7 +121,11 @@ final class SculptSession: ObservableObject {
     @Published private(set) var level = 0
     @Published private(set) var levelCount = 1
     @Published var lockBaseLevel = false {
-        didSet { if let document { cruth_document_set_base_locked(document, lockBaseLevel) } }
+        didSet {
+            guard let document else { return }
+            waitForAutosave()
+            cruth_document_set_base_locked(document, lockBaseLevel)
+        }
     }
     @Published var message: String?
     /// True while a long command runs off the main thread; input is ignored meanwhile.
@@ -161,7 +165,8 @@ final class SculptSession: ObservableObject {
     private var strokeFailureLogged = false
 
     init() {
-        newSphere()
+        autosaveStore.prepare()
+        if !restoreAutosave() { loadDefaultSphere() }
         memoryWarningObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -173,6 +178,7 @@ final class SculptSession: ObservableObject {
 
     deinit {
         if let memoryWarningObserver { NotificationCenter.default.removeObserver(memoryWarningObserver) }
+        autosaveQueue.sync {}  // a save may still be reading the document
         if let retopo { cruth_retopo_destroy(retopo) }
         if let document { cruth_document_destroy(document) }
     }
@@ -185,6 +191,7 @@ final class SculptSession: ObservableObject {
         if mode == .retopo { cancelRetopo() }
         if newMode == .retopo {
             guard let document else { return }
+            waitForAutosave()
             var handle: OpaquePointer?
             let status = cruth_retopo_begin(document, &handle)
             guard status == CRUTH_OK, let handle else {
@@ -363,12 +370,46 @@ final class SculptSession: ObservableObject {
 
     // MARK: Documents
 
-    func newSphere() {
+    /// Starts over on the default sphere and deletes the autosave.
+    func newSculpt() {
         guard !isBusy else { return }
+        Log.session.info("New sculpt")
+        if mode == .retopo { cancelRetopo() }
+        guideStrokes.removeAll()  // they described the old surface
+        waitForAutosave()
+        autosaveTimer?.cancel()
+        autosaveTimer = nil
+        autosaveStore.clear()
+        loadDefaultSphere()
+        dirty = false
+        savePending = false
+        message = nil
+    }
+
+    private func loadDefaultSphere() {
         var doc: OpaquePointer?
         let status = cruth_document_create_sphere(5, 1.0, &doc)
         replace(with: doc, status: status)
     }
+
+    /// Opens the last session's autosave in place of the default sphere.
+    private func restoreAutosave() -> Bool {
+        guard autosaveStore.exists else { return false }
+        Log.autosave.info("Restore started")
+        let start = Date()
+        guard let doc = autosaveStore.load() else {
+            message = "The last session could not be restored and was set aside"
+            return false
+        }
+        replace(with: doc, status: CRUTH_OK)
+        Log.autosave.info("Restore ended in \(Self.elapsed(since: start)): \(vertexCount) vertices, \(triangleCount) triangles")
+        message = Self.restoredMessage
+        return true
+    }
+
+    /// The autosave keeps the current level's mesh only (see AutosaveStore).
+    static let restoredMessage =
+        "Restored your last session: current level only; undo, mask, guides and retopo cage are not kept"
 
     func open(url: URL) {
         guard !isBusy else { return }
@@ -380,6 +421,7 @@ final class SculptSession: ObservableObject {
         let status = cruth_document_load(url.path(percentEncoded: false), &doc)
         replace(with: doc, status: status)
         if status == CRUTH_OK {
+            markDirty()
             message = "Opened \(url.lastPathComponent)"
             Log.commands.info("Import ended in \(Self.elapsed(since: start)): \(vertexCount) vertices, \(triangleCount) triangles")
         }
@@ -415,6 +457,7 @@ final class SculptSession: ObservableObject {
             message = error.localizedDescription
             return
         }
+        waitForAutosave()
         isBusy = true
         busyLabel = "Baking \(textureSize) px maps…"
         let path = folder.path(percentEncoded: false)
@@ -436,6 +479,7 @@ final class SculptSession: ObservableObject {
                     self.message = detail.isEmpty ? summary : "\(summary): \(detail)"
                     Log.commands.error("Export game asset failed after \(Self.elapsed(since: start)): \(summary): \(detail)")
                 }
+                self.autosaveIfPending()
             }
         }
     }
@@ -445,6 +489,7 @@ final class SculptSession: ObservableObject {
             report(status, "Load document")
             return
         }
+        waitForAutosave()
         if let document { cruth_document_destroy(document) }
         document = doc
         cruth_document_set_base_locked(doc, lockBaseLevel)
@@ -468,7 +513,10 @@ final class SculptSession: ObservableObject {
         guard let document, !isBusy else { return }
         var b = coreBrush
         strokeFailureLogged = false
-        logStrokeFailure(cruth_stroke_begin(document, &b), "begin")
+        waitForAutosave()
+        let status = cruth_stroke_begin(document, &b)
+        inStroke = status == CRUTH_OK
+        logStrokeFailure(status, "begin")
     }
 
     func addSample(_ position: SIMD3<Float>, pressure: Float) {
@@ -482,6 +530,11 @@ final class SculptSession: ObservableObject {
         guard let document else { return }
         logStrokeFailure(cruth_stroke_end(document), "end")
         refresh()
+        if inStroke {
+            inStroke = false
+            markDirty()
+            autosaveIfPending()
+        }
     }
 
     private func logStrokeFailure(_ status: CruthStatus, _ step: String) {
@@ -524,9 +577,12 @@ final class SculptSession: ObservableObject {
             if cruth_retopo_undo(retopo) { refreshRetopo() }
             return
         }
-        guard let document, cruth_undo(document) else { return }
+        guard let document else { return }
+        waitForAutosave()
+        guard cruth_undo(document) else { return }
         Log.input.info("Undo")
         refresh()
+        markDirty()
     }
 
     func redo() {
@@ -535,9 +591,12 @@ final class SculptSession: ObservableObject {
             if cruth_retopo_redo(retopo) { refreshRetopo() }
             return
         }
-        guard let document, cruth_redo(document) else { return }
+        guard let document else { return }
+        waitForAutosave()
+        guard cruth_redo(document) else { return }
         Log.input.info("Redo")
         refresh()
+        markDirty()
     }
 
     /// Adds a multires level on top of the stack and moves to it (PRD S-01).
@@ -555,6 +614,7 @@ final class SculptSession: ObservableObject {
         let target = Int32(level + delta)
         guard target >= 0, target < Int32(levelCount) else { return }
         Log.input.info("Level \(level) -> \(target)")
+        waitForAutosave()
         run(cruth_document_set_level(document, target), "Set level")
     }
 
@@ -608,6 +668,7 @@ final class SculptSession: ObservableObject {
                                  _ work: @escaping (OpaquePointer) -> CruthStatus,
                                  then: (() -> Void)? = nil) {
         guard let document, !isBusy else { return }
+        waitForAutosave()
         isBusy = true
         busyLabel = label
         Log.commands.info("\(command) started on \(vertexCount) vertices, \(triangleCount) triangles")
@@ -620,6 +681,7 @@ final class SculptSession: ObservableObject {
                 if status == CRUTH_OK {
                     self.message = done
                     self.refresh()
+                    self.markDirty()
                     Log.commands.info("\(command) ended in \(Self.elapsed(since: start)): " +
                                       "\(self.vertexCount) vertices, \(self.triangleCount) triangles")
                     then?()
@@ -628,6 +690,7 @@ final class SculptSession: ObservableObject {
                     self.message = detail.isEmpty ? summary : "\(summary): \(detail)"
                     Log.commands.error("\(command) failed after \(Self.elapsed(since: start)): \(summary): \(detail)")
                 }
+                self.autosaveIfPending()
             }
         }
     }
@@ -636,6 +699,7 @@ final class SculptSession: ObservableObject {
         if status == CRUTH_OK {
             message = nil
             refresh()
+            markDirty()
         } else {
             report(status, what)
         }
@@ -643,12 +707,14 @@ final class SculptSession: ObservableObject {
 
     func clearMask() {
         guard let document, !isBusy else { return }
+        waitForAutosave()
         cruth_mask_clear(document)
         refresh()
     }
 
     func invertMask() {
         guard let document, !isBusy else { return }
+        waitForAutosave()
         cruth_mask_invert(document)
         refresh()
     }
@@ -669,6 +735,7 @@ final class SculptSession: ObservableObject {
         var log = CruthRepairLog()
         Log.commands.info("Repair for print started")
         let start = Date()
+        waitForAutosave()
         let status = cruth_document_repair_print(document, &log)
         guard status == CRUTH_OK else {
             report(status, "Repair for print")
@@ -676,6 +743,7 @@ final class SculptSession: ObservableObject {
         }
         Log.commands.info("Repair for print ended in \(Self.elapsed(since: start))")
         refresh()
+        markDirty()
         return log
     }
 
@@ -721,6 +789,99 @@ final class SculptSession: ObservableObject {
 
     func scenePhaseChanged(to phase: ScenePhase) {
         Log.session.info("Scene phase \(String(describing: phase))")
+        // iPadOS may end a background app at any time; save before that can happen.
+        if phase != .active { autosave(reason: "scene \(String(describing: phase))") }
+    }
+
+    // MARK: Autosave
+
+    /// Edit-driven autosaves start at least this far apart...
+    private static let autosaveInterval: TimeInterval = AutosaveStore.delayOverride ?? 30
+    /// ...and no sooner than this after the edit that made the document dirty.
+    private static let autosaveQuietDelay: TimeInterval = AutosaveStore.delayOverride ?? 3
+
+    private let autosaveStore = AutosaveStore.standard()
+    /// Saves run here, off the main thread. A save only reads the document, so the
+    /// main thread keeps drawing and picking meanwhile (also reads), but every
+    /// edit first calls `waitForAutosave`. A save never starts during a stroke or
+    /// a background command, so no edit can be half-done when one starts.
+    private let autosaveQueue = DispatchQueue(label: "org.cruth.autosave", qos: .utility)
+    private var isSaving = false
+    /// The document changed since the last autosave started.
+    private var dirty = false
+    /// A save fell due during a stroke, command or other save; it runs when that ends.
+    private var savePending = false
+    private var inStroke = false
+    private var lastSaveStart = Date.distantPast
+    private var autosaveTimer: DispatchWorkItem?
+
+    private func markDirty() {
+        dirty = true
+        scheduleAutosave()
+    }
+
+    private func scheduleAutosave() {
+        guard autosaveTimer == nil else { return }
+        let wait = max(Self.autosaveQuietDelay, Self.autosaveInterval - Date().timeIntervalSince(lastSaveStart))
+        let item = DispatchWorkItem { [weak self] in
+            self?.autosaveTimer = nil
+            self?.autosave(reason: "edits")
+        }
+        autosaveTimer = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: item)
+    }
+
+    private func autosaveIfPending() {
+        if savePending { autosave(reason: "deferred") }
+    }
+
+    /// Saves the document if it changed since the last save, off the main thread.
+    func autosave(reason: String) {
+        guard dirty, let document else { return }
+        if isBusy || inStroke || isSaving {
+            if !savePending {
+                let why = isBusy ? "a command is running" : inStroke ? "a stroke is in progress" : "a save is running"
+                Log.autosave.info("Autosave (\(reason)) deferred: \(why)")
+            }
+            savePending = true
+            return
+        }
+        autosaveTimer?.cancel()
+        autosaveTimer = nil
+        isSaving = true
+        dirty = false
+        savePending = false
+        lastSaveStart = Date()
+        let generation = documentGeneration
+        let store = autosaveStore
+        let vertices = vertexCount
+        let task = BackgroundTask(name: "Autosave")
+        autosaveQueue.async {
+            let start = Date()
+            let result = Result { try store.write(document) }
+            let seconds = String(format: "%.3f s", Date().timeIntervalSince(start))
+            DispatchQueue.main.async {
+                self.isSaving = false
+                switch result {
+                case .success(let bytes):
+                    Log.autosave.info("Autosave (\(reason)) ended in \(seconds): \(vertices) vertices, \(bytes) bytes")
+                case .failure(let error):
+                    Log.autosave.error("Autosave (\(reason)) failed after \(seconds): \(error)")
+                    if generation == self.documentGeneration { self.dirty = true }
+                }
+                task.end()
+                if self.savePending { self.autosave(reason: "deferred") } else if self.dirty { self.scheduleAutosave() }
+            }
+        }
+    }
+
+    /// Every edit calls this before touching the document: it blocks until a
+    /// running autosave has finished reading it.
+    private func waitForAutosave() {
+        guard isSaving else { return }
+        let start = Date()
+        autosaveQueue.sync {}
+        Log.autosave.info("An edit waited \(Self.elapsed(since: start)) for the autosave")
     }
 
     /// The plain-text summary that Share Diagnostics puts next to the log files.
