@@ -57,13 +57,25 @@ final class Diagnostics {
         self.loggers = loggers
     }
 
-    func write(_ category: LogCategory, _ type: OSLogType, _ message: String) {
+    func write(_ category: LogCategory, _ type: OSLogType, _ text: String) {
+        let message = Self.redactingPaths(text)
         loggers[category]?.log(level: type, "\(message, privacy: .public)")
         let date = Date()
         queue.async {
             let level = type == .error ? "ERROR " : ""
             self.append("\(self.timestamp.string(from: date)) [\(category.rawValue)] \(level)\(message)\n")
         }
+    }
+
+    /// An absolute path: a "/" that does not follow a letter, digit or dot (so
+    /// "i/o error" stays), up to a quote, ": " or the end. Paths may hold spaces.
+    private static let absolutePath = try? NSRegularExpression(pattern: #"(?<![\w.])/[^'"\n]*?(?=['"]|: |$)"#)
+
+    /// Logs are shared, and paths carry user and file names, so they become "<path>".
+    static func redactingPaths(_ text: String) -> String {
+        guard text.contains("/"), let absolutePath else { return text }
+        return absolutePath.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text),
+                                                     withTemplate: "<path>")
     }
 
     /// Copies the log files and a summary into a fresh temporary folder, so the
