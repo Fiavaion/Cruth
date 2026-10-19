@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import simd
+import SwiftUI
 import UniformTypeIdentifiers
 
 /// Brushes offered in the palette, mapped onto the core's C enum.
@@ -101,13 +102,17 @@ extension UTType {
 final class SculptSession: ObservableObject {
     private(set) var document: OpaquePointer?
 
-    @Published var brush: BrushKind = .clay
+    @Published var brush: BrushKind = .clay {
+        didSet { if brush != oldValue { Log.input.info("Brush \(brush.title)") } }
+    }
     @Published var radius: Float = 0.12
     @Published var strength: Float = 0.5
     @Published var invert = false
     @Published var symmetryX = true
     @Published var pressureSize = false
-    @Published var fingerSculpting = false
+    @Published var fingerSculpting = false {
+        didSet { if fingerSculpting != oldValue { Log.input.info("Finger sculpting \(fingerSculpting ? "on" : "off")") } }
+    }
 
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
@@ -128,7 +133,10 @@ final class SculptSession: ObservableObject {
     @Published private(set) var guideStrokes: [[SIMD3<Float>]] = []
     @Published var keepDetail = true
     @Published var retopoTool: RetopoTool = .contour {
-        didSet { if oldValue == .quadPen, retopoTool != .quadPen { liftQuadPen() } }
+        didSet {
+            if oldValue == .quadPen, retopoTool != .quadPen { liftQuadPen() }
+            if retopoTool != oldValue { Log.input.info("Retopo tool \(retopoTool.title)") }
+        }
     }
     @Published var loopVertices = 12
     @Published var stripWidth: Float = 0.1
@@ -148,12 +156,23 @@ final class SculptSession: ObservableObject {
     @Published private(set) var documentGeneration = 0
 
     private var brushBeforeSqueeze: BrushKind?
+    private var memoryWarningObserver: NSObjectProtocol?
+    /// Only the first failing call of a stroke is logged, so a broken stroke cannot flood the log.
+    private var strokeFailureLogged = false
 
     init() {
         newSphere()
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Log.session.error("Memory warning with \(self.vertexCount) vertices, \(self.triangleCount) triangles, " +
+                              "level \(self.level) of \(self.levelCount - 1), busy: \(self.isBusy)")
+        }
     }
 
     deinit {
+        if let memoryWarningObserver { NotificationCenter.default.removeObserver(memoryWarningObserver) }
         if let retopo { cruth_retopo_destroy(retopo) }
         if let document { cruth_document_destroy(document) }
     }
@@ -162,13 +181,14 @@ final class SculptSession: ObservableObject {
 
     func setMode(_ newMode: WorkMode) {
         guard !isBusy, newMode != mode else { return }
+        Log.input.info("Mode \(mode.title) -> \(newMode.title)")
         if mode == .retopo { cancelRetopo() }
         if newMode == .retopo {
             guard let document else { return }
             var handle: OpaquePointer?
             let status = cruth_retopo_begin(document, &handle)
             guard status == CRUTH_OK, let handle else {
-                report(status)
+                report(status, "Begin retopo")
                 return
             }
             retopo = handle
@@ -207,7 +227,7 @@ final class SculptSession: ObservableObject {
                 }
             }
             if status != CRUTH_OK {
-                if retopoTool == .loopAround { flash(status) } else { report(status) }
+                if retopoTool == .loopAround { flash(status) } else { report(status, "Retopo \(retopoTool.title)") }
             }
             refreshRetopo()
         }
@@ -299,7 +319,8 @@ final class SculptSession: ObservableObject {
         cruth_retopo_slide_loop_end(retopo)
         liftQuadPen()
         let levels: Int32 = keepDetail ? 2 : 0
-        runInBackground("Applying retopology…", done: "Retopology applied") { doc in
+        runInBackground("Applying retopology…", command: "Apply retopo, \(levels) detail levels",
+                        done: "Retopology applied") { doc in
             cruth_retopo_apply(retopo, doc, levels)
         } then: {
             self.cancelRetopo()
@@ -353,10 +374,15 @@ final class SculptSession: ObservableObject {
         guard !isBusy else { return }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        Log.commands.info("Import \(url.lastPathComponent) started")
+        let start = Date()
         var doc: OpaquePointer?
         let status = cruth_document_load(url.path(percentEncoded: false), &doc)
         replace(with: doc, status: status)
-        if status == CRUTH_OK { message = "Opened \(url.lastPathComponent)" }
+        if status == CRUTH_OK {
+            message = "Opened \(url.lastPathComponent)"
+            Log.commands.info("Import ended in \(Self.elapsed(since: start)): \(vertexCount) vertices, \(triangleCount) triangles")
+        }
     }
 
     /// Serialises the current mesh through the core's exporter.
@@ -365,12 +391,16 @@ final class SculptSession: ObservableObject {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("cruth-export-\(UUID().uuidString).\(format.rawValue)")
         defer { try? FileManager.default.removeItem(at: url) }
+        Log.commands.info("Export \(format.rawValue.uppercased()) started")
+        let start = Date()
         let status = cruth_document_save(document, url.path(percentEncoded: false))
         guard status == CRUTH_OK else {
-            report(status)
+            report(status, "Export \(format.rawValue.uppercased())")
             return nil
         }
-        return try? Data(contentsOf: url)
+        let data = try? Data(contentsOf: url)
+        Log.commands.info("Export ended in \(Self.elapsed(since: start)): \(data?.count ?? 0) bytes")
+        return data
     }
 
     /// Decimates the most detailed level, unwraps it and bakes normal, AO and
@@ -388,6 +418,8 @@ final class SculptSession: ObservableObject {
         isBusy = true
         busyLabel = "Baking \(textureSize) px maps…"
         let path = folder.path(percentEncoded: false)
+        Log.commands.info("Export game asset \(textureSize) px started")
+        let start = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             var report = CruthAssetReport()
             let status = cruth_document_export_game_asset(document, path, "cruth", 20_000, textureSize, &report)
@@ -396,10 +428,13 @@ final class SculptSession: ObservableObject {
                 self.isBusy = false
                 if status == CRUTH_OK {
                     self.message = "Baked \(report.triangles) triangles, \(report.charts) UV charts"
+                    Log.commands.info("Export game asset ended in \(Self.elapsed(since: start)): " +
+                                      "\(report.triangles) triangles, \(report.charts) charts, \(report.misses) misses")
                     completion(folder)
                 } else {
                     let summary = String(cString: cruth_status_string(status))
                     self.message = detail.isEmpty ? summary : "\(summary): \(detail)"
+                    Log.commands.error("Export game asset failed after \(Self.elapsed(since: start)): \(summary): \(detail)")
                 }
             }
         }
@@ -407,7 +442,7 @@ final class SculptSession: ObservableObject {
 
     private func replace(with doc: OpaquePointer?, status: CruthStatus) {
         guard status == CRUTH_OK, let doc else {
-            report(status)
+            report(status, "Load document")
             return
         }
         if let document { cruth_document_destroy(document) }
@@ -432,20 +467,28 @@ final class SculptSession: ObservableObject {
     func beginStroke() {
         guard let document, !isBusy else { return }
         var b = coreBrush
-        _ = cruth_stroke_begin(document, &b)
+        strokeFailureLogged = false
+        logStrokeFailure(cruth_stroke_begin(document, &b), "begin")
     }
 
     func addSample(_ position: SIMD3<Float>, pressure: Float) {
         guard let document else { return }
         var sample = CruthStrokeSample(position: CruthVec3(x: position.x, y: position.y, z: position.z),
                                        pressure: pressure)
-        _ = cruth_stroke_add_sample(document, &sample)
+        logStrokeFailure(cruth_stroke_add_sample(document, &sample), "sample")
     }
 
     func endStroke() {
         guard let document else { return }
-        _ = cruth_stroke_end(document)
+        logStrokeFailure(cruth_stroke_end(document), "end")
         refresh()
+    }
+
+    private func logStrokeFailure(_ status: CruthStatus, _ step: String) {
+        guard status != CRUTH_OK, !strokeFailureLogged else { return }
+        strokeFailureLogged = true
+        Log.input.error("Stroke \(step) failed: \(String(cString: cruth_status_string(status))): " +
+                        String(cString: cruth_last_error()))
     }
 
     func raycast(origin: SIMD3<Float>, direction: SIMD3<Float>) -> (position: SIMD3<Float>, normal: SIMD3<Float>)? {
@@ -482,6 +525,7 @@ final class SculptSession: ObservableObject {
             return
         }
         guard let document, cruth_undo(document) else { return }
+        Log.input.info("Undo")
         refresh()
     }
 
@@ -492,6 +536,7 @@ final class SculptSession: ObservableObject {
             return
         }
         guard let document, cruth_redo(document) else { return }
+        Log.input.info("Redo")
         refresh()
     }
 
@@ -502,19 +547,21 @@ final class SculptSession: ObservableObject {
             message = "Mesh is already dense; subdividing again would exceed the phase-0 budget."
             return
         }
-        runInBackground("Subdividing…") { cruth_document_subdivide($0, 1) }
+        runInBackground("Subdividing…", command: "Subdivide") { cruth_document_subdivide($0, 1) }
     }
 
     func stepLevel(by delta: Int) {
         guard let document, !isBusy else { return }
         let target = Int32(level + delta)
         guard target >= 0, target < Int32(levelCount) else { return }
-        run(cruth_document_set_level(document, target))
+        Log.input.info("Level \(level) -> \(target)")
+        run(cruth_document_set_level(document, target), "Set level")
     }
 
     /// Rebuilds the mesh as an even, closed quad surface (PRD S-02). Drops multires levels.
     func voxelRemesh(resolution: Int32) {
-        runInBackground("Voxel remeshing at \(resolution)…", done: "Remeshed at \(resolution) voxels") {
+        runInBackground("Voxel remeshing at \(resolution)…", command: "Voxel remesh \(resolution)",
+                        done: "Remeshed at \(resolution) voxels") {
             cruth_document_voxel_remesh($0, resolution)
         }
     }
@@ -525,7 +572,8 @@ final class SculptSession: ObservableObject {
     func quadRemesh(faces: UInt64) {
         let guides = guideStrokes
         let levels: Int32 = keepDetail ? 2 : 0
-        runInBackground("Quad remeshing to \(faces) faces…", done: "Quad remeshed") { doc in
+        runInBackground("Quad remeshing to \(faces) faces…", command: "Quad remesh \(faces), \(guides.count) guides",
+                        done: "Quad remeshed") { doc in
             let points = guides.flatMap { $0 }.map { CruthVec3(x: $0.x, y: $0.y, z: $0.z) }
             let sizes = guides.map { UInt32($0.count) }
             return points.withUnsafeBufferPointer { pts in
@@ -549,18 +597,21 @@ final class SculptSession: ObservableObject {
     func decimate(keeping fraction: Double) {
         guard let document, !isBusy else { return }
         let target = max(4, UInt64(Double(cruth_document_triangle_count(document)) * fraction))
-        runInBackground("Decimating…") { cruth_document_decimate($0, target) }
+        runInBackground("Decimating…", command: "Decimate to \(target)") { cruth_document_decimate($0, target) }
     }
 
     /// Runs a long document command off the main thread. While it runs, input,
     /// other commands, picking and drawing are suspended, so nothing else
     /// touches the document.
-    private func runInBackground(_ label: String, done: String? = nil,
+    /// `command` names it in the diagnostics log.
+    private func runInBackground(_ label: String, command: String, done: String? = nil,
                                  _ work: @escaping (OpaquePointer) -> CruthStatus,
                                  then: (() -> Void)? = nil) {
         guard let document, !isBusy else { return }
         isBusy = true
         busyLabel = label
+        Log.commands.info("\(command) started on \(vertexCount) vertices, \(triangleCount) triangles")
+        let start = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             let status = work(document)
             let detail = String(cString: cruth_last_error())
@@ -569,21 +620,24 @@ final class SculptSession: ObservableObject {
                 if status == CRUTH_OK {
                     self.message = done
                     self.refresh()
+                    Log.commands.info("\(command) ended in \(Self.elapsed(since: start)): " +
+                                      "\(self.vertexCount) vertices, \(self.triangleCount) triangles")
                     then?()
                 } else {
                     let summary = String(cString: cruth_status_string(status))
                     self.message = detail.isEmpty ? summary : "\(summary): \(detail)"
+                    Log.commands.error("\(command) failed after \(Self.elapsed(since: start)): \(summary): \(detail)")
                 }
             }
         }
     }
 
-    private func run(_ status: CruthStatus) {
+    private func run(_ status: CruthStatus, _ what: String) {
         if status == CRUTH_OK {
             message = nil
             refresh()
         } else {
-            report(status)
+            report(status, what)
         }
     }
 
@@ -604,7 +658,7 @@ final class SculptSession: ObservableObject {
         var result = CruthPrintReport()
         let status = cruth_document_check_print(document, &result)
         guard status == CRUTH_OK else {
-            report(status)
+            report(status, "Print check")
             return nil
         }
         return result
@@ -613,11 +667,14 @@ final class SculptSession: ObservableObject {
     func repairForPrint() -> CruthRepairLog? {
         guard let document, !isBusy else { return nil }
         var log = CruthRepairLog()
+        Log.commands.info("Repair for print started")
+        let start = Date()
         let status = cruth_document_repair_print(document, &log)
         guard status == CRUTH_OK else {
-            report(status)
+            report(status, "Repair for print")
             return nil
         }
+        Log.commands.info("Repair for print ended in \(Self.elapsed(since: start))")
         refresh()
         return log
     }
@@ -641,16 +698,44 @@ final class SculptSession: ObservableObject {
         levelCount = Int(cruth_document_level_count(document))
     }
 
-    private func report(_ status: CruthStatus) {
+    /// Shows a failed C API call in the status bar and logs it; `what` names the call for the log.
+    private func report(_ status: CruthStatus, _ what: String) {
         let detail = String(cString: cruth_last_error())
         let summary = String(cString: cruth_status_string(status))
+        Log.commands.error("\(what) failed: \(summary): \(detail)")
         message = detail.isEmpty ? summary.capitalized : "\(summary.capitalized): \(detail)"
     }
 
     /// Reports a rejected cage edit for a few seconds; the reason is usually enough.
     private func flash(_ status: CruthStatus) {
         let detail = String(cString: cruth_last_error())
+        Log.input.error("Retopo \(retopoTool.title) refused: \(String(cString: cruth_status_string(status))): \(detail)")
         flash(detail.isEmpty ? String(cString: cruth_status_string(status)).capitalized : detail)
+    }
+
+    static func elapsed(since start: Date) -> String {
+        String(format: "%.3f s", Date().timeIntervalSince(start))
+    }
+
+    // MARK: Diagnostics
+
+    func scenePhaseChanged(to phase: ScenePhase) {
+        Log.session.info("Scene phase \(String(describing: phase))")
+    }
+
+    /// The plain-text summary that Share Diagnostics puts next to the log files.
+    func diagnosticsSummary() -> String {
+        """
+        Cruth \(Diagnostics.appVersion), core \(String(cString: cruth_version()))
+        \(Diagnostics.systemVersion)
+        Device: \(Diagnostics.deviceModel)
+        Date: \(Date().formatted(.iso8601))
+        Mesh: \(vertexCount) vertices, \(triangleCount) triangles, level \(level) of \(levelCount - 1)
+        Mode: \(mode.title)\(mode == .retopo ? ", tool \(retopoTool.title)" : ""), brush \(brush.title), \
+        finger sculpting \(fingerSculpting ? "on" : "off")
+        Busy: \(isBusy ? busyLabel : "no")
+
+        """
     }
 
     /// Each flash gets a token, so a repeat of the same message gets its own 4 s
