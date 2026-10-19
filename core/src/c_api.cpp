@@ -21,6 +21,10 @@ struct CruthDocument {
     explicit CruthDocument(cruth::Mesh mesh) : doc(std::move(mesh)) {}
 };
 
+struct CruthMesh {
+    cruth::Mesh mesh;
+};
+
 namespace {
 
 thread_local std::string g_last_error;
@@ -167,6 +171,26 @@ CruthStatus cruth_document_save(const CruthDocument* doc, const char* path) {
 }
 
 void cruth_document_destroy(CruthDocument* doc) { delete doc; }
+
+CruthStatus cruth_document_snapshot(const CruthDocument* doc, CruthMesh** out) {
+    if (!out) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    *out = nullptr;
+    if (!doc) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        *out = new CruthMesh{doc->doc.mesh()};
+        return CRUTH_OK;
+    });
+}
+
+CruthStatus cruth_mesh_save(const CruthMesh* mesh, const char* path) {
+    if (!mesh || !path) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        auto status = cruth::save_mesh(mesh->mesh, path);
+        return status ? CRUTH_OK : from_error(status.error());
+    });
+}
+
+void cruth_mesh_destroy(CruthMesh* mesh) { delete mesh; }
 
 size_t cruth_document_vertex_count(const CruthDocument* doc) { return doc ? doc->doc.mesh().vertex_count() : 0; }
 
