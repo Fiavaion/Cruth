@@ -23,7 +23,10 @@ struct PrintCheckView: View {
                         row("Triangles", r.triangles)
                         row("Shells", r.shells)
                         LabeledContent("Size", value: size(r))
-                        LabeledContent("Volume", value: r.volume.formatted(.number.precision(.significantDigits(4))))
+                        LabeledContent("Volume") {
+                            Text(r.volume.formatted(.number.precision(.significantDigits(4))))
+                                .accessibilityIdentifier("printCheck.Volume")
+                        }
                     }
                     Section("Problems") {
                         row("Holes", r.holes)
