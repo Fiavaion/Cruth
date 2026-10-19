@@ -114,6 +114,12 @@ public:
     std::uint64_t geometry_revision() const { return sculptor_.revision() + topology_revision_; }
     std::uint64_t topology_revision() const { return topology_revision_; }
 
+    // How the picking BVH has been kept current, for tests and profiling.
+    struct BvhUpdates {
+        std::uint64_t builds = 0, full_refits = 0, partial_refits = 0;
+    };
+    const BvhUpdates& bvh_updates() const { return bvh_updates_; }
+
 private:
     struct State {
         MultiresStack stack;
@@ -150,6 +156,7 @@ private:
     mutable std::uint64_t bvh_topology_ = ~std::uint64_t(0);
     mutable std::uint64_t bvh_geometry_ = ~std::uint64_t(0);
     mutable std::uint64_t bvh_journal_ = 0;  // sculptor journal mark the BVH is synced to
+    mutable BvhUpdates bvh_updates_;
 };
 
 const char* brush_name(BrushType type);

@@ -332,6 +332,44 @@ TEST(sculpt_journal_invalidates_on_rebuild) {
     CHECK(sculptor.moved_since(sculptor.journal_end()).has_value());
 }
 
+// A consumer that falls behind a journal overflow must resync in full; one
+// that was caught up when it overflowed still gets exactly the new entries.
+TEST(sculpt_journal_overflow_drops_stale_marks) {
+    constexpr std::size_t kCapacity = std::size_t(1) << 16;  // max(65536, vertex count)
+    Mesh m = make_quad_sphere(3, 1.0f);
+    REQUIRE(m.vertex_count() < kCapacity);
+    Sculptor sculptor(m);
+    SculptDelta all;  // touches every vertex without moving it
+    for (Index v = 0; v < m.vertex_count(); ++v) all.vertices.push_back(v);
+    all.before = all.after = m.positions;
+
+    const std::uint64_t stale = sculptor.journal_end();
+    const std::size_t fits = kCapacity / all.vertices.size();
+    for (std::size_t i = 0; i < fits; ++i) sculptor.apply(all, true);
+    auto moved = sculptor.moved_since(stale);
+    REQUIRE(moved.has_value());
+    CHECK_EQ(moved->size(), fits * all.vertices.size());
+
+    const std::uint64_t caught_up = sculptor.journal_end();
+    sculptor.apply(all, true);  // overflows
+    CHECK(!sculptor.moved_since(stale).has_value());
+    moved = sculptor.moved_since(caught_up);
+    REQUIRE(moved.has_value());
+    CHECK(std::vector<Index>(moved->begin(), moved->end()) == all.vertices);
+
+    // A single batch larger than the journal leaves every mark behind.
+    const std::uint64_t before_huge = sculptor.journal_end();
+    SculptDelta huge;
+    for (std::size_t i = 0; i <= kCapacity; ++i) huge.vertices.push_back(Index(i % m.vertex_count()));
+    for (Index v : huge.vertices) huge.before.push_back(m.positions[v]);
+    huge.after = huge.before;
+    sculptor.apply(huge, true);
+    CHECK(!sculptor.moved_since(before_huge).has_value());
+    moved = sculptor.moved_since(sculptor.journal_end());
+    REQUIRE(moved.has_value());
+    CHECK(moved->empty());
+}
+
 // Document picking after strokes (mirrored too), undo/redo and level changes
 // matches a BVH built from scratch on the current mesh.
 TEST(document_raycasts_track_strokes_undo_and_levels) {
@@ -349,6 +387,7 @@ TEST(document_raycasts_track_strokes_undo_and_levels) {
     b.radius = 0.12f;
     b.strength = 1.0f;
     b.symmetry.x = true;
+    const Document::BvhUpdates small_before = doc.bvh_updates();
     doc.begin_stroke(b);
     for (int i = 0; i <= 8; ++i) {
         aim = normalize(Vec3{0.5f, 0.05f * float(i), 0.8f});
@@ -357,6 +396,10 @@ TEST(document_raycasts_track_strokes_undo_and_levels) {
         CHECK_EQ(ray_mismatches(doc, rng, Vec3{-aim.x, aim.y, aim.z}), 0);
     }
     doc.end_stroke();
+    // Every sample of a small stroke takes the partial path.
+    CHECK_EQ(doc.bvh_updates().partial_refits, small_before.partial_refits + 9);
+    CHECK_EQ(doc.bvh_updates().full_refits, small_before.full_refits);
+    CHECK_EQ(doc.bvh_updates().builds, small_before.builds);
     CHECK(doc.undo());
     CHECK_EQ(ray_mismatches(doc, rng, aim), 0);
     CHECK(doc.undo());
@@ -364,8 +407,24 @@ TEST(document_raycasts_track_strokes_undo_and_levels) {
     CHECK(doc.redo());
     CHECK_EQ(ray_mismatches(doc, rng, aim), 0);
 
+    // Undoing a stroke that moved a large part of the mesh refits in full.
+    BrushSettings big;
+    big.radius = 0.9f;
+    big.strength = 1.0f;
+    doc.begin_stroke(big);
+    doc.add_stroke_sample({{0, 0, 1}, 1.0f});
+    doc.end_stroke();
+    CHECK_EQ(ray_mismatches(doc, rng, Vec3{0, 0, 1}), 0);
+    const Document::BvhUpdates big_before = doc.bvh_updates();
+    CHECK(doc.undo());
+    CHECK_EQ(ray_mismatches(doc, rng, Vec3{0, 0, 1}), 0);
+    CHECK_EQ(doc.bvh_updates().full_refits, big_before.full_refits + 1);
+    CHECK_EQ(doc.bvh_updates().partial_refits, big_before.partial_refits);
+
+    const Document::BvhUpdates level_before = doc.bvh_updates();
     REQUIRE(doc.set_level(0).is_ok());
     CHECK_EQ(ray_mismatches(doc, rng, aim), 0);
+    CHECK_EQ(doc.bvh_updates().builds, level_before.builds + 1);
     aim = random_stroke(doc, rng, BrushType::Inflate, true);
     CHECK_EQ(ray_mismatches(doc, rng, aim), 0);
     REQUIRE(doc.set_level(1).is_ok());  // the coarse stroke propagates up

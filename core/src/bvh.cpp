@@ -221,11 +221,11 @@ void TriangleBVH::prepare_partial_refit() {
     stamp_ = 0;
 }
 
-void TriangleBVH::refit(const std::vector<Vec3>& positions, std::span<const Index> moved) {
+bool TriangleBVH::refit(const std::vector<Vec3>& positions, std::span<const Index> moved) {
     if (nodes_.empty() || positions.size() != positions_.size() ||
         moved.size() > positions_.size() / kPartialRefitDivisor) {
         refit(positions);
-        return;
+        return false;
     }
     if (vertex_leaf_offsets_.empty()) prepare_partial_refit();
     if (++stamp_ == 0) {
@@ -239,7 +239,7 @@ void TriangleBVH::refit(const std::vector<Vec3>& positions, std::span<const Inde
     for (Index v : moved) {
         if (v >= positions_.size()) {
             refit(positions);
-            return;
+            return false;
         }
         positions_[v] = positions[v];
         for (std::uint32_t i = vertex_leaf_offsets_[v]; i < vertex_leaf_offsets_[v + 1]; ++i) {
@@ -262,6 +262,7 @@ void TriangleBVH::refit(const std::vector<Vec3>& positions, std::span<const Inde
     // each recomputed box is bit-identical to the full refit's.
     std::sort(dirty_.begin(), dirty_.end(), std::greater<>());
     for (std::uint32_t i : dirty_) refit_node(i);
+    return true;
 }
 
 std::optional<RayHit> TriangleBVH::raycast(Vec3 origin, Vec3 direction, float max_distance) const {

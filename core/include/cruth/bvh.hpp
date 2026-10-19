@@ -36,8 +36,9 @@ public:
     void refit(const std::vector<Vec3>& positions);  // same topology, new positions
     // Same as refit(positions) when `positions` differs from positions() only
     // at the `moved` vertices (repeats allowed), and gives bit-identical boxes.
-    // Falls back to the full refit when so many vertices moved that it is cheaper.
-    void refit(const std::vector<Vec3>& positions, std::span<const Index> moved);
+    // Falls back to the full refit when so many vertices moved that it is
+    // cheaper; returns false when it did.
+    bool refit(const std::vector<Vec3>& positions, std::span<const Index> moved);
     bool empty() const { return triangles_.empty(); }
 
     std::size_t triangle_count() const { return triangles_.size(); }
