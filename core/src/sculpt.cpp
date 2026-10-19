@@ -117,6 +117,10 @@ struct Sculptor::Impl {
     SpatialGrid grid;
     std::uint64_t revision = 0;
 
+    // Moved-vertex journal; journal_base is the sequence number of journal[0].
+    std::vector<Index> journal;
+    std::uint64_t journal_base = 0;
+
     // Stroke state.
     bool active = false;
     BrushSettings brush;
@@ -163,6 +167,25 @@ struct Sculptor::Impl {
         stroke_id = scratch_id = 0;
         grid.build(mesh.positions, default_cell());
         ++revision;
+        // Every vertex may have moved outside the journal: invalidate all marks.
+        journal_base += journal.size() + 1;
+        journal.clear();
+    }
+
+    // Bounded so long runs without a consumer cannot grow it without limit;
+    // a consumer that falls behind an overflow resyncs in full.
+    std::size_t journal_capacity() const { return std::max<std::size_t>(std::size_t(1) << 16, mesh.vertex_count()); }
+
+    void journal_moved(const std::vector<Index>& moved) {
+        if (journal.size() + moved.size() > journal_capacity()) {
+            journal_base += journal.size();
+            journal.clear();
+            if (moved.size() > journal_capacity()) {
+                journal_base += moved.size();
+                return;
+            }
+        }
+        journal.insert(journal.end(), moved.begin(), moved.end());
     }
 
     float default_cell() const {
@@ -253,6 +276,7 @@ struct Sculptor::Impl {
         changed.clear();
         for (const auto& xf : transforms) dab_one(xf.apply(center), r, s);
         if (!changed.empty()) {
+            journal_moved(changed);
             update_normals(changed);
             ++revision;
         }
@@ -395,6 +419,7 @@ struct Sculptor::Impl {
             }
         }
         if (!changed.empty()) {
+            journal_moved(changed);
             update_normals(changed);
             ++revision;
         }
@@ -485,6 +510,7 @@ void Sculptor::apply(const SculptDelta& delta, bool forward) {
         s.grid.move(v, pos[i]);
     }
     for (std::size_t i = 0; i < delta.mask_vertices.size(); ++i) s.mask[delta.mask_vertices[i]] = msk[i];
+    s.journal_moved(delta.vertices);
     s.update_normals(delta.vertices);
     ++s.revision;
 }
@@ -504,5 +530,14 @@ void Sculptor::invert_mask() {
 }
 
 std::uint64_t Sculptor::revision() const { return impl_->revision; }
+
+std::uint64_t Sculptor::journal_end() const { return impl_->journal_base + impl_->journal.size(); }
+
+std::optional<std::span<const Index>> Sculptor::moved_since(std::uint64_t mark) const {
+    const Impl& s = *impl_;
+    if (mark < s.journal_base || mark > journal_end()) return std::nullopt;
+    const auto skip = static_cast<std::size_t>(mark - s.journal_base);
+    return std::span<const Index>(s.journal).subspan(skip);
+}
 
 }  // namespace cruth

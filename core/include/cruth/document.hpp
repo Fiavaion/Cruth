@@ -149,6 +149,7 @@ private:
     mutable TriangleBVH bvh_;
     mutable std::uint64_t bvh_topology_ = ~std::uint64_t(0);
     mutable std::uint64_t bvh_geometry_ = ~std::uint64_t(0);
+    mutable std::uint64_t bvh_journal_ = 0;  // sculptor journal mark the BVH is synced to
 };
 
 const char* brush_name(BrushType type);

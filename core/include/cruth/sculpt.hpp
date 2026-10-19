@@ -9,6 +9,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <span>
 #include <vector>
 
 #include "cruth/curve.hpp"
@@ -90,6 +92,14 @@ public:
 
     // Bumped whenever positions, normals or the mask change.
     std::uint64_t revision() const;
+
+    // Journal of moved vertices, so a consumer such as the document's BVH can
+    // update only what changed. Keep journal_end() after syncing; moved_since()
+    // with that mark then lists every vertex moved since (with repeats), or
+    // returns nullopt when the journal no longer reaches back that far (after
+    // rebuild() or an overflow) and the consumer must resync in full.
+    std::uint64_t journal_end() const;
+    std::optional<std::span<const Index>> moved_since(std::uint64_t mark) const;
 
 private:
     struct Impl;
