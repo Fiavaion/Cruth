@@ -41,6 +41,7 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     private let penLayer = CAShapeLayer()  // pending quad-pen taps
     private let hiddenPenLayer = CAShapeLayer()  // ones behind the model: hollow, faint, dashed
     private var pathPoints: [SIMD3<Float>] = []
+    private var drawnOverlay: OverlayKey?
 
     // Retopology tools that take taps or drags rather than strokes: the tool and
     // where the touch landed, whether it has moved too far to be a tap, and the
@@ -121,6 +122,14 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         // While a background command owns the document, raycasts fail and the
         // viewport keeps its last frame, so keep the overlay that matches it.
         guard let renderer, !session.isBusy else { return }
+        // Every published change lands here, slider drags included; the
+        // occlusion raycasts are only worth redoing when what they see changed.
+        let key = overlayKey(camera: renderer.camera)
+        if key == drawnOverlay {
+            refreshLivePath()
+            return
+        }
+        drawnOverlay = key
         let camera = renderer.camera
         let size = bounds.size
         var tested: [SIMD3<Float>: Bool] = [:]  // cage edges share endpoints
@@ -194,6 +203,27 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         hiddenRetopoLayer.path = hiddenCage.cgPath
         CATransaction.commit()
         refreshLivePath()
+    }
+
+    /// Everything the overlay is drawn from. The arrays compare by storage
+    /// first, so an unchanged cage or guide list costs nothing to check.
+    private struct OverlayKey: Equatable {
+        var camera: OrbitCamera
+        var size: CGSize
+        var generation: Int
+        var geometry: UInt64
+        var topology: UInt64
+        var guides: [[SIMD3<Float>]]
+        var cage: [SIMD3<Float>]
+        var pen: [SIMD3<Float>]
+    }
+
+    private func overlayKey(camera: OrbitCamera) -> OverlayKey {
+        let document = session.document
+        return OverlayKey(camera: camera, size: bounds.size, generation: session.documentGeneration,
+                          geometry: document.map { cruth_document_geometry_revision($0) } ?? 0,
+                          topology: document.map { cruth_document_topology_revision($0) } ?? 0,
+                          guides: session.guideStrokes, cage: session.retopoEdges, pen: session.quadPenPending)
     }
 
     /// Fraction of a point's depth by which the model may lie in front of it

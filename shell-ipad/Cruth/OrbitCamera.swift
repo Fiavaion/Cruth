@@ -3,7 +3,7 @@ import simd
 
 /// Turntable camera around a target point (PRD N-01). Right-handed, Y up,
 /// Metal clip space (depth 0...1).
-struct OrbitCamera {
+struct OrbitCamera: Equatable {
     var target = SIMD3<Float>(0, 0, 0)
     var distance: Float = 3.2
     var yaw: Float = 0
