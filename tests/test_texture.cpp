@@ -368,12 +368,11 @@ TEST(bake_tangent_normal_decodes_to_object_normal_like_an_engine) {
         const Image& obj_map = baked.value()[1].image;
 
         // Fan triangles in the baker's order, as (vertex, uv) per corner.
-        std::size_t tri = 0;
         std::vector<std::array<Index, 3>> tri_vertices;
         std::vector<std::array<Vec2, 3>> tri_uv;
         for (std::size_t f = 0; f < low.face_count(); ++f) {
             const auto fv = low.face(f);
-            for (std::size_t i = 1; i + 1 < fv.size(); ++i, ++tri) {
+            for (std::size_t i = 1; i + 1 < fv.size(); ++i) {
                 const std::size_t c[3] = {0, i, i + 1};
                 tri_vertices.push_back({fv[c[0]], fv[c[1]], fv[c[2]]});
                 tri_uv.push_back({uv.corner(low, f, c[0]), uv.corner(low, f, c[1]), uv.corner(low, f, c[2])});
