@@ -50,8 +50,11 @@ targets:
       configs:
         # The C++ core is the only C-family code in the app. Unoptimised, quad
         # remesh takes over a minute in a Debug build, so optimise it even in
-        # Debug; Swift stays unoptimised for debugging.
+        # Debug; Swift stays unoptimised for debugging. Release uses -O2 too
+        # rather than Xcode's default -Os, so both builds run the same core.
         Debug:
+          GCC_OPTIMIZATION_LEVEL: "2"
+        Release:
           GCC_OPTIMIZATION_LEVEL: "2"
       base:
         PRODUCT_NAME: Cruth
