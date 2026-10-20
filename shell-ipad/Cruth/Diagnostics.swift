@@ -67,9 +67,13 @@ final class Diagnostics {
         }
     }
 
-    /// An absolute path: a "/" that does not follow a letter, digit or dot (so
-    /// "i/o error" stays), up to a quote, ": " or the end. Paths may hold spaces.
-    private static let absolutePath = try? NSRegularExpression(pattern: #"(?<![\w.])/[^'"\n]*?(?=['"]|: |$)"#)
+    /// An absolute path under a typical root, or a file:// URL, through to the end
+    /// of its line: file names may hold spaces, quotes or ": ", so nothing short of
+    /// the line end reliably ends them. Each line of a multi-line message is
+    /// checked. "i/o error" and "1 / 2" are not paths.
+    private static let absolutePath = try? NSRegularExpression(
+        pattern: #"(?:file://|(?<![\w.])/(?:Users|private|var|tmp|Volumes|System|Library|Applications)\b).*$"#,
+        options: [.anchorsMatchLines])
 
     /// Logs are shared, and paths carry user and file names, so they become "<path>".
     static func redactingPaths(_ text: String) -> String {
