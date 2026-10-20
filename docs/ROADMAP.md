@@ -37,7 +37,13 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 - [x] Finger sculpting: a finger on the model sculpts, a finger on the background still orbits; a mouse or trackpad sculpts the same way (I-01)
 - [x] "Draw with Finger" toggle in the Guides and Retopo panels
 - [x] Guide and cage overlays are occluded by the model, with a faint dashed pass for the hidden parts
-- [x] XCUITest smoke suite (18 tests) behind `./scripts/ipad.sh test`
+- [x] XCUITest smoke suite (25 tests) behind `./scripts/ipad.sh test`
+- [x] Autosave and restore of the current sculpt (L-04, partial): binary PLY of the current level in Application Support/Autosave, written off the main thread from a core snapshot (`cruth_document_snapshot`, `cruth_mesh_save`, `cruth_mesh_destroy` in `cruth.h`), debounced (3 s quiet, 60 s cap, 30 s minimum), saved inside a background task on background, atomic replace. Restored at launch with a message; a restore marker guards against crash loops and broken files are set aside, keeping the newest 3. "New Sculpt" is the reset command. Not kept: levels above and below the current one, undo history, mask, guides, retopo cage
+- [x] On-device diagnostics: os.Logger (subsystem `org.cruth.app`), a rolling 1 MB log file with absolute paths redacted, and "Share Diagnostics…" in the Cruth menu
+- [x] iPad shell is single-window (`UIApplicationSupportsMultipleScenes` false)
+- [x] Speed: partial BVH refit after brush samples (exact; full refit above 1/16 of the vertices moved); overlay refresh cached on its inputs and coalesced to once per frame; `ipad.sh --release`; the Release config sets `GCC_OPTIMIZATION_LEVEL` 2
+- [x] First device install: iPad Pro 12.9" M1, iPadOS 27.0.1, Xcode 27.1, Release build. `ipad.sh device` builds for the connected iPad with `-allowProvisioningDeviceRegistration` and skips simulators
+- [x] GCC 16 (Homebrew) run on this Mac: clean, 3/3 ctest. GitHub Actions CI is not running at the moment (account billing problem), so local GCC, ASan and licence-guard runs stand in
 - [x] C++ core optimised in iPad Debug builds: the quad remesh UI test drops from 73 s to 14 s
 - [x] MikkTSpace tangents for tangent-space normal bakes, with the exact inverse on encode; VDM uses an orthonormal unit-frame TBN; both decode rules are documented in `bake.hpp` (K-01, K-02)
 - [x] Game-asset OBJ export is fan-triangulated with `vn`, so it matches the bake
@@ -60,6 +66,7 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 | UV tile utilisation, acceptance head | before → after the new packer | 0.227 → 0.548 |
 | UV tile utilisation, sphere level 5 | before → after the new packer | 0.385 → 0.626 |
 | Bake normal + height + AO (16 spp) + VDM, 512² | 12k → 98k-quad source | 0.8 s |
+| BVH refit + ray after a brush sample, level-8 quad sphere (393k vertices), radius 0.12 | full refit → partial refit | 3.2 ms → 0.05 ms |
 | Acceptance chain, smoke | 197k-triangle head → 4.7k quads, 2 × 1K tiles | 7 s |
 | Acceptance chain, full | 3.1M-triangle head → 19.5k quads, 2 × 4K tiles | 77 s (quad remesh 48 s, bake 16 s) |
 
@@ -80,21 +87,22 @@ PRD target: 512³ in ≤ 1 s on M4 and ≤ 3 s on A14, through the Metal compute
 - The plain CLI `unwrap` output OBJ is still quads with no `vn`.
 - Quad-pen dots ignore occlusion.
 - A two-finger undo tap during finger drawing can add a tiny guide or contour first.
-- GCC has not been run on this Mac; only Clang is checked locally.
+- Autosave keeps the current level only, so a kill while you are working at a lower level loses the finer detail.
+- xcodebuild under Xcode 27.1 with iOS 26.5 simulators logs harmless `invalidDigitCount` and debugger version warnings.
 - Face rings on quad-remesh output are helical: a ring started anywhere tends to wind over the whole mesh, so Insert Loop on raw remesh output roughly triples the face count. Guide strokes align the field but do not close the loops around a feature; Loop Around now closes a loop by hand, but the remesher does not. The acceptance chain therefore uses a snapped relax for its hand-retopology step, and the PRD's "retopo the eye loops by hand" waits on loop-closing in the remesher, or on a bounded loop cut between poles (Loop Around covers the closed-loop case by hand).
 - The acceptance reference sculpt is about 3M triangles, not the PRD's 5M: one more multires level would be 12M.
 - The deflate encoder uses fixed Huffman codes only, so files are larger than zlib's level 6 output. They are valid and readable everywhere.
 
 ### Next, in dependency order
 
-1. Hands-on iPad testing of the finger-driven tools.
+1. Hands-on iPad testing of the finger-driven tools (in progress: an iPad is connected).
 2. Seam painting in the shell (U-02); curvature and cavity bakes.
 3. Tangent-space multires detail and sparse on-disk levels, dyntopo (S-03), Metal compute paths for remesh and bake (K-03).
 4. Retopology leftovers: merge, symmetry, n-gon/pole warnings in the overlay (T-03, T-05), Pencil Pro barrel roll for loop count (I-02).
 
 ## Phase 1: MVP (TestFlight)
 
-Shell work on top of the phase-0 core: retopo workspace and stroke tools (T-01 to T-03, T-06), 2D UV editor (U-03), layers (L-01), autosave (L-04), Metal compute paths, Background Tasks with Live Activities (R-03), open project format v0 (`spec/`), and print profiles and export (X-03 to X-05).
+Shell work on top of the phase-0 core: retopo workspace and stroke tools (T-01 to T-03, T-06), 2D UV editor (U-03), layers (L-01), autosave of the finest level and the full project format (L-04; current-level autosave is done), Metal compute paths, Background Tasks with Live Activities (R-03), open project format v0 (`spec/`), and print profiles and export (X-03 to X-05).
 
 ## Phases 2 and 3: v1 and post-v1
 

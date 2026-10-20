@@ -76,7 +76,7 @@ To debug the core, use the Run and Debug panel: **Core: unit tests**, **Core: ac
 
 This picks the first available iPad simulator. To choose another, set `CRUTH_SIMULATOR="iPad Pro 13-inch (M5)"` (list them with `xcrun simctl list devices available`). With finger sculpting on, a finger on the model sculpts and a finger on the background orbits; a mouse or trackpad acts the same way in the simulator. Turn on **Finger Sculpting** in the brush panel. The **Draw with Finger** toggle in the Guides and Retopo panels does the same for guide strokes and retopology tools. The Pencil-only features (pressure, hover, squeeze) need a real iPad.
 
-To run the 18-test XCUITest smoke suite in the simulator:
+To run the 25-test XCUITest smoke suite in the simulator:
 
 ```sh
 ./scripts/ipad.sh test
@@ -92,7 +92,9 @@ To run the 18-test XCUITest smoke suite in the simulator:
    ```
    Your team ID is in Xcode → Settings → Accounts → (team) or at developer.apple.com → Membership. With a free account, the bundle ID must be unique to you.
 3. Connect the iPad by cable, unlock it, tap **Trust**, and turn on **Settings → Privacy & Security → Developer Mode** (it restarts).
-4. Run `./scripts/ipad.sh device` (or the **iPad: run on connected iPad** task). On the first run, you may need to trust your developer certificate on the iPad, under Settings → General → VPN & Device Management.
+4. Run `./scripts/ipad.sh device` (or the **iPad: run on connected iPad** task); add `--release` for a Release build. It builds for the connected iPad with `-allowProvisioningDeviceRegistration` (so Xcode registers it with your team) and skips simulators. On the first run, you may need to trust your developer certificate on the iPad, under Settings → General → VPN & Device Management.
+
+Tested: iPad Pro 12.9" M1, iPadOS 27.0.1, Xcode 27.1, Release build.
 
 ## 6. Working with Claude Code
 
@@ -111,5 +113,9 @@ Good first prompts:
 - **"Metal Toolchain not installed"** when compiling `Shaders.metal`: Xcode 26 ships the Metal compiler as a separate component. Run `xcodebuild -downloadComponent MetalToolchain`, or use Xcode → Settings → Components.
 - **No iPad simulator:** Xcode → Settings → Components, install the iOS 26 simulator runtime.
 - **"No signing certificate" or "requires a development team"** on a device build: see section 5. Simulator builds need no signing.
+- **"No Accounts" or "profile doesn't include the device":** sign in under Xcode → Settings → Accounts. Xcode updates can drop the sign-in.
+- **After an Xcode update:** run `sudo xcodebuild -license accept`, and `xcodebuild -downloadComponent MetalToolchain` again.
+- **Developer Mode is missing from the iPad's Settings:** it only appears once Xcode has paired with the iPad.
+- **`invalidDigitCount` or debugger version warnings** from xcodebuild with iOS 26.5 simulators under Xcode 27.1: harmless.
 - **The generated project is out of date** after you add or move Swift files: run `./scripts/ipad.sh generate`. Never edit `Cruth.xcodeproj` by hand; change `shell-ipad/project.yml` instead.
 - **Tests are very slow:** run them in Release. Debug and sanitizer builds of the quad remesher are 20–100× slower.

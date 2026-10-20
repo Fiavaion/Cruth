@@ -31,7 +31,7 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 cmake --preset asan && cmake --build --preset asan && ctest --preset asan              # before committing core changes
 ./scripts/ipad.sh build        # iPad app for the simulator (macOS + Xcode 26 only)
 ./scripts/ipad.sh run          # build, wait for the simulator to boot, launch, stream logs
-./scripts/ipad.sh test         # 18-test XCUITest smoke suite in the simulator
+./scripts/ipad.sh test         # 25-test XCUITest smoke suite in the simulator
 ```
 
 - Run tests in **Release**. Debug and ASan are very slow on quad remesh (Eigen unoptimised): the CLI chain takes about 40 minutes under ASan. The debug and asan test presets skip the acceptance label for that reason.
@@ -58,10 +58,11 @@ cmake --preset asan && cmake --build --preset asan && ctest --preset asan       
 
 Phase 0 (headless core) has met its exit gate locally. See ROADMAP for measurements and known issues. The iPad shell builds and runs on a Mac (Xcode 26.6, iPad Pro 13-inch M5 simulator, iOS 26.5), and the core passes ctest on macOS/arm64. Things to know:
 - The Metal toolchain must be downloaded once (`xcodebuild -downloadComponent MetalToolchain`) before `Shaders.metal` compiles.
-- `./scripts/ipad.sh test` runs a 18-test XCUITest smoke suite. `ipad.sh run` waits for the simulator to boot.
-- Device signing has been tested through `shell-ipad/Signing.local.xcconfig`.
+- `./scripts/ipad.sh test` runs a 25-test XCUITest smoke suite. `ipad.sh run` waits for the simulator to boot.
+- First device install done: iPad Pro 12.9" M1, iPadOS 27.0.1, Xcode 27.1, Release build. `./scripts/ipad.sh build|run|device` take `--release`. `ipad.sh device` builds for the connected iPad (`-allowProvisioningDeviceRegistration`, simulators skipped) and signs through `shell-ipad/Signing.local.xcconfig`.
+- The shell is single-window (`UIApplicationSupportsMultipleScenes` is false). Autosave (L-04, partial) saves the current level as binary PLY in Application Support/Autosave from a core snapshot (`cruth_document_snapshot`, `cruth_mesh_save`, `cruth_mesh_destroy`), off the main thread, and restores it at launch. Diagnostics go to os.Logger (`org.cruth.app`) and a rolling 1 MB log with paths redacted; "Share Diagnostics…" is in the Cruth menu.
 - Keep Swift 5 mode with default concurrency checking. Don't enable "Default Actor Isolation = MainActor" or strict concurrency without fixing `Renderer` (MTKViewDelegate) and `SculptSession` background closures.
-- GCC has not been run on this Mac.
+- GCC 16 (Homebrew) has been run on this Mac: clean, 3/3 ctest. GitHub Actions CI is not running at the moment (account billing problem), so local GCC, ASan and licence-guard runs stand in.
 - To change project settings, edit `shell-ipad/project.yml` (then `./scripts/ipad.sh generate`), never the generated project.
 
-Next work, in order: hands-on iPad testing of the finger-driven tools, seam painting in the shell, tangent-space multires, Metal compute paths, then phase 1 (TestFlight MVP).
+Next work, in order: hands-on iPad testing of the finger-driven tools, seam painting in the shell, tangent-space multires, Metal compute paths, then phase 1 (TestFlight MVP). Hands-on iPad testing is in progress (an iPad is connected).
