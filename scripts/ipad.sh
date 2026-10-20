@@ -104,7 +104,7 @@ case "$command" in
     app="$derived/Build/Products/$configuration-iphoneos/Cruth.app"
     device="${CRUTH_DEVICE:-}"
     if [[ -z "$device" ]]; then
-      device="$(xcrun devicectl list devices 2>/dev/null | grep -i ipad \
+      device="$(xcrun devicectl list devices 2>/dev/null | grep -i ipad | grep -v simulated \
         | grep -oE '[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}' | head -1 || true)"
     fi
     [[ -n "$device" ]] || fail "no iPad found. Connect it, unlock it, trust this Mac, and enable Developer Mode; or set CRUTH_DEVICE (see: xcrun devicectl list devices)"
