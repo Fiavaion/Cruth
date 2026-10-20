@@ -101,7 +101,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.drawIndexedPrimitives(type: .triangle, indexCount: indexCount, indexType: .uint32,
                                       indexBuffer: indexBuffer, indexBufferOffset: 0)
         encoder.endEncoding()
-        if session.restoreUnconfirmed {
+        if session.restoreAwaitingFrame {
             // A restore counts once the GPU has drawn the restored mesh (see AutosaveStore.restoreMarker).
             let session = self.session
             commands.addCompletedHandler { _ in DispatchQueue.main.async { session.restoredFrameDrawn() } }

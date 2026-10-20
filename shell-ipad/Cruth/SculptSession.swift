@@ -381,7 +381,7 @@ final class SculptSession: ObservableObject {
         dirty = false
         dirtySince = nil
         savePending = false
-        restoreUnconfirmed = false
+        confirmRestore(because: "New Sculpt")
         message = nil
     }
 
@@ -401,22 +401,46 @@ final class SculptSession: ObservableObject {
             return false
         }
         replace(with: doc, status: CRUTH_OK)
-        restoreUnconfirmed = true
+        restorePending = true
         Log.autosave.info("Restore ended in \(Self.elapsed(since: start)): \(vertexCount) vertices, \(triangleCount) triangles")
         announce(Self.restoredMessage)
         return true
     }
 
-    /// True from a restore until the GPU has drawn the restored mesh.
-    private(set) var restoreUnconfirmed = false
+    /// True from a restore until its marker is removed (see AutosaveStore.restoreMarker).
+    private var restorePending = false
+    /// The GPU has finished a frame of the restored mesh.
+    private var restoredFrameCompleted = false
+    /// The renderer reports the first completed frame while this is true.
+    var restoreAwaitingFrame: Bool { restorePending && !restoredFrameCompleted }
 
     /// Called by the renderer when a frame of the restored mesh has completed.
     func restoredFrameDrawn() {
-        guard restoreUnconfirmed else { return }
-        restoreUnconfirmed = false
-        let store = autosaveStore
+        guard restoreAwaitingFrame else { return }
+        restoredFrameCompleted = true
         // A couple of seconds more covers whatever follows the first frame of a dense mesh.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { store.confirmRestore() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + AutosaveStore.restoreConfirmDelay) { [weak self] in
+            self?.confirmRestore(because: "the restored mesh was drawn")
+        }
+    }
+
+    /// Removes the restore marker, so the next launch restores normally.
+    private func confirmRestore(because reason: String) {
+        guard restorePending else { return }
+        restorePending = false
+        autosaveStore.confirmRestore(because: reason)
+    }
+
+    /// Leaving the foreground must not leave the marker behind: a background kill
+    /// is ordinary and would set a good autosave aside on the next launch.
+    private func confirmRestoreOnLeaving(_ phase: ScenePhase) {
+        guard restorePending else { return }
+        if restoredFrameCompleted {
+            confirmRestore(because: "the app left the foreground after drawing it")
+        } else if phase == .background {
+            // Nothing drawn yet, so a crash cannot have come from drawing it; keep the work.
+            confirmRestore(because: "the app went to the background before drawing it")
+        }
     }
 
     /// Shows a status message and reads it out with VoiceOver. At launch the
@@ -540,7 +564,7 @@ final class SculptSession: ObservableObject {
     }
 
     func addSample(_ position: SIMD3<Float>, pressure: Float) {
-        guard let document, inStroke else { return }
+        guard let document, inStroke, !isBusy else { return }
         var sample = CruthStrokeSample(position: CruthVec3(x: position.x, y: position.y, z: position.z),
                                        pressure: pressure)
         logStrokeFailure(cruth_stroke_add_sample(document, &sample), "sample")
@@ -592,6 +616,7 @@ final class SculptSession: ObservableObject {
     /// document's), otherwise the document's.
     func undo() {
         guard !isBusy else { return }
+        if inStroke { endStroke() }
         if let retopo {
             if cruth_retopo_undo(retopo) { refreshRetopo() }
             return
@@ -605,6 +630,7 @@ final class SculptSession: ObservableObject {
 
     func redo() {
         guard !isBusy else { return }
+        if inStroke { endStroke() }
         if let retopo {
             if cruth_retopo_redo(retopo) { refreshRetopo() }
             return
@@ -630,6 +656,7 @@ final class SculptSession: ObservableObject {
         guard let document, !isBusy else { return }
         let target = Int32(level + delta)
         guard target >= 0, target < Int32(levelCount) else { return }
+        if inStroke { endStroke() }
         Log.input.info("Level \(level) -> \(target)")
         run(cruth_document_set_level(document, target), "Set level")
     }
@@ -684,6 +711,7 @@ final class SculptSession: ObservableObject {
                                  _ work: @escaping (OpaquePointer) -> CruthStatus,
                                  then: (() -> Void)? = nil) {
         guard let document, !isBusy else { return }
+        if inStroke { endStroke() }
         isBusy = true
         busyLabel = label
         Log.commands.info("\(command) started on \(vertexCount) vertices, \(triangleCount) triangles")
@@ -802,7 +830,10 @@ final class SculptSession: ObservableObject {
     func scenePhaseChanged(to phase: ScenePhase) {
         Log.session.info("Scene phase \(String(describing: phase))")
         // iPadOS may end a background app at any time; save before that can happen.
-        if phase != .active { autosave(reason: "scene \(String(describing: phase))") }
+        if phase != .active {
+            confirmRestoreOnLeaving(phase)
+            autosave(reason: "scene \(String(describing: phase))")
+        }
     }
 
     // MARK: Autosave
@@ -887,6 +918,7 @@ final class SculptSession: ObservableObject {
             Log.autosave.error("Autosave (\(reason)) snapshot failed: \(String(cString: cruth_status_string(status))): " +
                                String(cString: cruth_last_error()))
             savePending = false
+            lastSaveStart = snapshotStart  // e.g. out of memory: don't retry every few seconds
             scheduleAutosave()  // dirty stays set: try again later
             task.end()
             return
@@ -908,6 +940,8 @@ final class SculptSession: ObservableObject {
                 self.isSaving = false
                 switch result {
                 case .success(let bytes):
+                    // The file on disk is no longer the one being restored.
+                    self.confirmRestore(because: "a newer autosave was written")
                     Log.autosave.info("Autosave (\(reason)): snapshot \(snapshotTime) on the main thread, " +
                                       "write \(seconds): \(vertices) vertices, \(bytes) bytes")
                 case .failure(let error):

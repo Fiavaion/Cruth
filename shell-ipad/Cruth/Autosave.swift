@@ -32,7 +32,9 @@ struct AutosaveStore {
 
     var file: URL { directory.appendingPathComponent("autosave.ply") }
     /// Written before a restore loads and removed by `confirmRestore` once the
-    /// restored mesh has been drawn for a while. Found at launch, it means the
+    /// restored mesh has been drawn for a while, the app leaves the foreground
+    /// after drawing it (or before drawing anything), or a newer autosave is
+    /// written. Found at launch, it means the
     /// last restore never got that far (the app was killed or crashed loading or
     /// drawing it), so that autosave is set aside rather than retried forever.
     var restoreMarker: URL { directory.appendingPathComponent("restoring") }
@@ -49,6 +51,17 @@ struct AutosaveStore {
         if value > 0 { return value }
         #endif
         return nil
+    }
+
+    /// Seconds a restore waits after its first drawn frame before it counts as
+    /// safe. Debug builds take `-cruthRestoreConfirmDelay` so a UI test can leave
+    /// the app inside that window.
+    static var restoreConfirmDelay: TimeInterval {
+        #if DEBUG
+        let value = UserDefaults.standard.double(forKey: "cruthRestoreConfirmDelay")
+        if value > 0 { return value }
+        #endif
+        return 2
     }
 
     static func standard() -> AutosaveStore {
@@ -143,10 +156,11 @@ struct AutosaveStore {
         return doc
     }
 
-    /// The restored mesh loaded and drew without killing the app.
-    func confirmRestore() {
+    /// The restore is no longer at risk: the mesh drew, the app left the
+    /// foreground, or a newer autosave replaced the restored file.
+    func confirmRestore(because reason: String) {
         try? FileManager.default.removeItem(at: restoreMarker)
-        Log.autosave.info("Restore confirmed")
+        Log.autosave.info("Restore confirmed: \(reason)")
     }
 
     /// Keeps a broken autosave as broken-<date>.ply for later inspection.
