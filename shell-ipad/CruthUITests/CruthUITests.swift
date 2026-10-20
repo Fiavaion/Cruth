@@ -34,12 +34,13 @@ final class CruthUITests: XCTestCase {
     }
 
     /// `autosaveDelay` sets the app's debug-only interval between edit-driven autosaves.
-    private func launchApp(autosaveDelay: TimeInterval? = nil) {
+    private func launchApp(autosaveDelay: TimeInterval? = nil, restoreConfirmDelay: TimeInterval? = nil) {
         app = XCUIApplication()
         // Pin the number format ("6,146") and the default (right-handed) layout.
         app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-leftHanded", "NO",
                                 "-cruthAutosavePath", autosaveDirectory.path]
         if let autosaveDelay { app.launchArguments += ["-cruthAutosaveDelay", "\(autosaveDelay)"] }
+        if let restoreConfirmDelay { app.launchArguments += ["-cruthRestoreConfirmDelay", "\(restoreConfirmDelay)"] }
         app.launch()
         XCTAssertTrue(statusCounts.waitForExistence(timeout: 30), "status bar never appeared")
     }
@@ -358,6 +359,25 @@ final class CruthUITests: XCTestCase {
         XCTAssertTrue(restored.label.hasPrefix("Restored your last session"), "unexpected message: \(restored.label)")
         XCTAssertTrue(waitForFile(marker, toExist: false, timeout: 15),
                       "the restore was never confirmed, so the next launch would set it aside")
+    }
+
+    func testLeavingRightAfterARestoreKeepsTheAutosave() {
+        let marker = autosaveDirectory.appendingPathComponent("restoring")
+        sculptAndBackground()
+        app.terminate()
+
+        // Restore, then leave while the restore still waits after its first frame
+        // (stretched to 10 minutes here, so only leaving can remove the marker).
+        launchApp(restoreConfirmDelay: 600)
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(waitForFile(marker, toExist: false, timeout: 10),
+                      "leaving the foreground kept the restore marker, so a background kill would set the autosave aside")
+        app.terminate()
+
+        launchApp()
+        let restored = app.staticTexts["statusMessage"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 30), "no message after relaunch")
+        XCTAssertTrue(restored.label.hasPrefix("Restored your last session"), "unexpected message: \(restored.label)")
     }
 
     func testCorruptAutosaveStartsOnTheDefaultSphere() throws {
