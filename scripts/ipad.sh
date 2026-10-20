@@ -100,14 +100,18 @@ case "$command" in
     ;;
   device)
     generate
-    xcb -configuration "$configuration" -destination 'generic/platform=iOS' -allowProvisioningUpdates build
-    app="$derived/Build/Products/$configuration-iphoneos/Cruth.app"
     device="${CRUTH_DEVICE:-}"
     if [[ -z "$device" ]]; then
       device="$(xcrun devicectl list devices 2>/dev/null | grep -i ipad | grep -v simulated \
-        | grep -oE '[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}' | head -1 || true)"
+        | grep -oE '[0-9A-Fa-f-]{20,40} \(UDID\)' | head -1 | cut -d' ' -f1 || true)"  # device UDIDs are 8-16 hex, not UUIDs
     fi
     [[ -n "$device" ]] || fail "no iPad found. Connect it, unlock it, trust this Mac, and enable Developer Mode; or set CRUTH_DEVICE (see: xcrun devicectl list devices)"
+    # Build for this iPad, not a generic device, so Xcode registers it with the
+    # team and puts it in the provisioning profile; otherwise install fails with
+    # "This provisioning profile cannot be installed on this device".
+    xcb -configuration "$configuration" -destination "id=$device" \
+      -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
+    app="$derived/Build/Products/$configuration-iphoneos/Cruth.app"
     xcrun devicectl device install app --device "$device" "$app"
     xcrun devicectl device process launch --device "$device" "$(bundle_id)"
     ;;
