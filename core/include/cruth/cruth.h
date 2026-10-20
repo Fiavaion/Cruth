@@ -121,6 +121,18 @@ CruthStatus cruth_document_load(const char* path, CruthDocument** out);
 CruthStatus cruth_document_save(const CruthDocument* doc, const char* path);
 void cruth_document_destroy(CruthDocument* doc);
 
+/* Snapshots -------------------------------------------------------------- */
+
+typedef struct CruthMesh CruthMesh;
+
+/* Copies the mesh cruth_document_save would write (the current level, with any
+ * stroke so far). The copy is independent of the document, so it can be saved
+ * on another thread while the document keeps changing. */
+CruthStatus cruth_document_snapshot(const CruthDocument* doc, CruthMesh** out);
+/* Writes a snapshot; the format follows the extension, as for cruth_document_save. */
+CruthStatus cruth_mesh_save(const CruthMesh* mesh, const char* path);
+void cruth_mesh_destroy(CruthMesh* mesh);
+
 /* Render data -------------------------------------------------------------- */
 
 size_t cruth_document_vertex_count(const CruthDocument* doc);

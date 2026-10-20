@@ -2,7 +2,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "cruth/cruth.h"
 #include "cruth/document.hpp"
@@ -438,6 +441,70 @@ TEST(document_raycasts_track_strokes_undo_and_levels) {
     CHECK(doc.redo());
     CHECK(doc.redo());
     CHECK_EQ(ray_mismatches(doc, rng, aim), 0);
+}
+
+// The shell autosaves a snapshot on another thread while sculpting goes on, so
+// the snapshot must keep the mesh as it was when taken.
+TEST(c_api_snapshot_survives_later_edits) {
+    CruthDocument* doc = nullptr;
+    REQUIRE(cruth_document_create_sphere(3, 1.0f, &doc) == CRUTH_OK);
+    const size_t verts = cruth_document_vertex_count(doc);
+    const size_t tris = cruth_document_triangle_count(doc);
+    std::vector<float> before(verts * 7);
+    std::vector<uint32_t> before_tris(tris * 3);
+    REQUIRE(cruth_document_copy_vertices(doc, before.data(), before.size()) == CRUTH_OK);
+    REQUIRE(cruth_document_copy_triangles(doc, before_tris.data(), before_tris.size()) == CRUTH_OK);
+
+    CruthMesh* snapshot = nullptr;
+    REQUIRE(cruth_document_snapshot(doc, &snapshot) == CRUTH_OK);
+    REQUIRE(snapshot != nullptr);
+
+    // Mutate: a stroke moves positions, a subdivision changes the topology.
+    CruthBrush brush = cruth_brush_default(CRUTH_BRUSH_CLAY);
+    brush.strength = 1.0f;
+    brush.radius = 0.5f;
+    REQUIRE(cruth_stroke_begin(doc, &brush) == CRUTH_OK);
+    for (int i = 0; i <= 10; ++i) {
+        CruthStrokeSample s{{-0.3f + 0.06f * float(i), 0.0f, 0.97f}, 1.0f};
+        CHECK(cruth_stroke_add_sample(doc, &s) == CRUTH_OK);
+    }
+    CHECK(cruth_stroke_end(doc) == CRUTH_OK);
+    std::vector<float> sculpted(verts * 7);
+    REQUIRE(cruth_document_copy_vertices(doc, sculpted.data(), sculpted.size()) == CRUTH_OK);
+    bool moved = false;
+    for (size_t v = 0; v < verts; ++v) {
+        for (int a = 0; a < 3; ++a) moved = moved || sculpted[v * 7 + a] != before[v * 7 + a];
+    }
+    CHECK(moved);
+    REQUIRE(cruth_document_subdivide(doc, 1) == CRUTH_OK);
+
+    const std::string path = (std::filesystem::temp_directory_path() / "cruth_snapshot_test.ply").string();
+    REQUIRE(cruth_mesh_save(snapshot, path.c_str()) == CRUTH_OK);
+    cruth_mesh_destroy(snapshot);
+    cruth_document_destroy(doc);
+
+    CruthDocument* loaded = nullptr;
+    REQUIRE(cruth_document_load(path.c_str(), &loaded) == CRUTH_OK);
+    std::filesystem::remove(path);
+    REQUIRE(cruth_document_vertex_count(loaded) == verts);
+    REQUIRE(cruth_document_triangle_count(loaded) == tris);
+    std::vector<float> after(verts * 7);
+    std::vector<uint32_t> after_tris(tris * 3);
+    REQUIRE(cruth_document_copy_vertices(loaded, after.data(), after.size()) == CRUTH_OK);
+    REQUIRE(cruth_document_copy_triangles(loaded, after_tris.data(), after_tris.size()) == CRUTH_OK);
+    bool same_positions = true;
+    for (size_t v = 0; v < verts; ++v) {
+        for (int a = 0; a < 3; ++a) same_positions = same_positions && after[v * 7 + a] == before[v * 7 + a];
+    }
+    CHECK(same_positions);  // binary PLY keeps float32 positions bit-exact
+    CHECK(after_tris == before_tris);
+    cruth_document_destroy(loaded);
+
+    CruthMesh* none = nullptr;
+    CHECK(cruth_document_snapshot(nullptr, &none) == CRUTH_ERROR_INVALID_ARGUMENT);
+    CHECK(none == nullptr);
+    CHECK(cruth_mesh_save(nullptr, "x.ply") == CRUTH_ERROR_INVALID_ARGUMENT);
+    cruth_mesh_destroy(nullptr);
 }
 
 TEST(c_api_end_to_end) {

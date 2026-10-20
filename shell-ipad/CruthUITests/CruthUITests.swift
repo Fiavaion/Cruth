@@ -15,15 +15,34 @@ final class CruthUITests: XCTestCase {
     private let initialVertices = 6_146
     private let backgroundCorner = CGVector(dx: 0.1, dy: 0.88)
 
+    /// Each test autosaves into its own empty folder, so no test restores another's sculpt.
+    private var autosaveDirectory: URL!
+    private var autosaveFile: URL { autosaveDirectory.appendingPathComponent("autosave.ply") }
+
     override func setUpWithError() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft
+        autosaveDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cruth-autosave-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: autosaveDirectory, withIntermediateDirectories: true)
+        launchApp()
+        waitForVertexCount(initialVertices, timeout: 30)
+    }
+
+    override func tearDownWithError() throws {
+        if let autosaveDirectory { try? FileManager.default.removeItem(at: autosaveDirectory) }
+    }
+
+    /// `autosaveDelay` sets the app's debug-only interval between edit-driven autosaves.
+    private func launchApp(autosaveDelay: TimeInterval? = nil, restoreConfirmDelay: TimeInterval? = nil) {
         app = XCUIApplication()
         // Pin the number format ("6,146") and the default (right-handed) layout.
-        app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-leftHanded", "NO"]
+        app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-leftHanded", "NO",
+                                "-cruthAutosavePath", autosaveDirectory.path]
+        if let autosaveDelay { app.launchArguments += ["-cruthAutosaveDelay", "\(autosaveDelay)"] }
+        if let restoreConfirmDelay { app.launchArguments += ["-cruthRestoreConfirmDelay", "\(restoreConfirmDelay)"] }
         app.launch()
         XCTAssertTrue(statusCounts.waitForExistence(timeout: 30), "status bar never appeared")
-        waitForVertexCount(initialVertices, timeout: 30)
     }
 
     // MARK: Tests
@@ -274,6 +293,143 @@ final class CruthUITests: XCTestCase {
         waitFor(status, "exists == false", timeout: 10, "Done did not close Print Check")
     }
 
+    // MARK: Autosave
+
+    func testSculptSurvivesBackgroundAndRelaunch() {
+        // No edit-driven save during the test: the only save is the one leaving the
+        // foreground makes, so the file appearing means that save has finished.
+        app.terminate()
+        launchApp(autosaveDelay: 3600)
+        waitForVertexCount(initialVertices, timeout: 30)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: autosaveFile.path), "an unedited sphere was autosaved")
+
+        let freshVolume = printCheckVolume()
+        setFingerSculpting(true)
+        for dy in [0.45, 0.5, 0.55] {
+            drag(from: CGVector(dx: 0.42, dy: dy), to: CGVector(dx: 0.58, dy: dy))
+        }
+        waitFor(undoButton, "isEnabled == true", timeout: 10, "finger strokes did not record an undo step")
+        let sculptedVolume = printCheckVolume()
+        XCTAssertNotEqual(sculptedVolume, freshVolume, "the strokes did not change the volume, so it proves nothing")
+
+        // Leaving the foreground saves; the file appears once the save has been swapped in whole.
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(waitForFile(autosaveFile, timeout: 20), "backgrounding did not write \(autosaveFile.path)")
+        app.terminate()
+
+        launchApp()
+        let message = app.staticTexts["statusMessage"]
+        XCTAssertTrue(message.waitForExistence(timeout: 30), "no restore message after relaunch")
+        XCTAssertTrue(message.label.hasPrefix("Restored your last session"), "unexpected message: \(message.label)")
+        XCTAssertEqual(vertexCount(), initialVertices)
+        XCTAssertFalse(undoButton.isEnabled, "a restored session starts with no undo history")
+        XCTAssertEqual(printCheckVolume(), sculptedVolume, "the restored sculpt is not the one that was saved")
+    }
+
+    func testEditsAutosaveWhileTheAppStaysOpen() {
+        app.terminate()
+        launchApp(autosaveDelay: 1)
+        waitForVertexCount(initialVertices, timeout: 30)
+        setFingerSculpting(true)
+        drag(from: CGVector(dx: 0.42, dy: 0.5), to: CGVector(dx: 0.58, dy: 0.5))
+        waitFor(undoButton, "isEnabled == true", timeout: 10, "finger stroke did not record an undo step")
+        XCTAssertTrue(waitForFile(autosaveFile, timeout: 15), "a stroke was not autosaved within the delay")
+    }
+
+    func testInterruptedRestoreSetsAsideOnlyThatAutosave() throws {
+        let marker = autosaveDirectory.appendingPathComponent("restoring")
+        sculptAndBackground()
+        app.terminate()
+        // As if the last launch died while loading or drawing this autosave.
+        try Data().write(to: marker)
+
+        launchApp()
+        waitForVertexCount(initialVertices, timeout: 30)
+        let message = app.staticTexts["statusMessage"]
+        XCTAssertTrue(message.waitForExistence(timeout: 10), "the interrupted restore was not reported")
+        XCTAssertEqual(message.label, "The last session could not be restored and was set aside")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "the stale restore marker was kept")
+
+        // A fresh autosave made after that must restore on the next launch.
+        sculptAndBackground()
+        app.terminate()
+        launchApp()
+        let restored = app.staticTexts["statusMessage"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 30), "no message after the second relaunch")
+        XCTAssertTrue(restored.label.hasPrefix("Restored your last session"), "unexpected message: \(restored.label)")
+        XCTAssertTrue(waitForFile(marker, toExist: false, timeout: 15),
+                      "the restore was never confirmed, so the next launch would set it aside")
+    }
+
+    func testLeavingRightAfterARestoreKeepsTheAutosave() {
+        let marker = autosaveDirectory.appendingPathComponent("restoring")
+        sculptAndBackground()
+        app.terminate()
+
+        // Restore, then leave while the restore still waits after its first frame
+        // (stretched to 10 minutes here, so only leaving can remove the marker).
+        launchApp(restoreConfirmDelay: 600)
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(waitForFile(marker, toExist: false, timeout: 10),
+                      "leaving the foreground kept the restore marker, so a background kill would set the autosave aside")
+        app.terminate()
+
+        launchApp()
+        let restored = app.staticTexts["statusMessage"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 30), "no message after relaunch")
+        XCTAssertTrue(restored.label.hasPrefix("Restored your last session"), "unexpected message: \(restored.label)")
+    }
+
+    func testCorruptAutosaveStartsOnTheDefaultSphere() throws {
+        app.terminate()
+        // A truncated PLY: the header promises 1,000 vertices, the body holds four bytes.
+        let header = "ply\nformat binary_little_endian 1.0\nelement vertex 1000\n" +
+            "property float x\nproperty float y\nproperty float z\nend_header\n"
+        try (Data(header.utf8) + Data([1, 2, 3, 4])).write(to: autosaveFile)
+
+        launchApp()
+        waitForVertexCount(initialVertices, timeout: 30)
+        XCTAssertEqual(triangleCount(), 12_288)
+        XCTAssertFalse(undoButton.isEnabled)
+        let message = app.staticTexts["statusMessage"]
+        XCTAssertTrue(message.waitForExistence(timeout: 10), "the failed restore was not reported")
+        XCTAssertEqual(message.label, "The last session could not be restored and was set aside")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: autosaveFile.path), "the broken autosave was left in place")
+        let names = try FileManager.default.contentsOfDirectory(atPath: autosaveDirectory.path)
+        XCTAssertTrue(names.contains { $0.hasPrefix("broken-") && $0.hasSuffix(".ply") },
+                      "the broken autosave was not kept aside: \(names)")
+    }
+
+    func testNewSculptAsksThenResetsAndClearsTheAutosave() {
+        setFingerSculpting(true)
+        drag(from: CGVector(dx: 0.42, dy: 0.5), to: CGVector(dx: 0.58, dy: 0.5))
+        waitFor(undoButton, "isEnabled == true", timeout: 10, "finger stroke did not record an undo step")
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(waitForFile(autosaveFile, timeout: 20), "backgrounding did not write the autosave")
+        app.activate()
+        XCTAssertTrue(statusCounts.waitForExistence(timeout: 30))
+
+        openNewSculpt().buttons["Cancel"].firstMatch.tap()
+        XCTAssertTrue(undoButton.isEnabled, "cancelling New Sculpt reset the document")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: autosaveFile.path), "cancelling New Sculpt removed the autosave")
+
+        openNewSculpt().buttons["newSculptConfirmButton"].firstMatch.tap()
+        waitFor(undoButton, "isEnabled == false", timeout: 10, "New Sculpt did not reset the document")
+        XCTAssertEqual(vertexCount(), initialVertices)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: autosaveFile.path), "New Sculpt left the autosave behind")
+    }
+
+    // MARK: Diagnostics
+
+    func testShareDiagnosticsOpensTheShareSheet() {
+        app.buttons["cruthMenu"].firstMatch.tap()
+        let item = app.buttons["shareDiagnosticsButton"].firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 10), "Share Diagnostics not in the Cruth menu")
+        item.tap()
+        let sheet = app.otherElements["ActivityListView"].firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 15), "no share sheet: \(app.debugDescription)")
+    }
+
     // MARK: Elements
 
     private var viewport: XCUIElement { app.descendants(matching: .any)["viewport"].firstMatch }
@@ -385,6 +541,50 @@ final class CruthUITests: XCTestCase {
     /// "12 quads · 0 other · 0 poles" -> 12
     private func retopoQuads(_ stats: XCUIElement) -> Int {
         Int(stats.label.prefix { $0.isNumber }) ?? -1
+    }
+
+    /// One finger stroke, then Home; returns once the autosave file exists.
+    private func sculptAndBackground(file: StaticString = #filePath, line: UInt = #line) {
+        setFingerSculpting(true, file: file, line: line)
+        drag(from: CGVector(dx: 0.42, dy: 0.5), to: CGVector(dx: 0.58, dy: 0.5))
+        waitFor(undoButton, "isEnabled == true", timeout: 10, "finger stroke did not record an undo step",
+                file: file, line: line)
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(waitForFile(autosaveFile, timeout: 20), "backgrounding did not write the autosave",
+                      file: file, line: line)
+    }
+
+    /// Opens Print Check, reads the volume ("Volume, 4.18") and closes it again.
+    private func printCheckVolume(file: StaticString = #filePath, line: UInt = #line) -> String {
+        app.buttons["printCheckButton"].tap()
+        let volume = app.staticTexts["printCheck.Volume"]
+        XCTAssertTrue(volume.waitForExistence(timeout: 30), "Print Check sheet did not open", file: file, line: line)
+        let label = volume.label
+        app.buttons["printCheckDone"].tap()
+        waitFor(volume, "exists == false", timeout: 10, "Done did not close Print Check", file: file, line: line)
+        return label
+    }
+
+    /// Cruth menu > New Sculpt; returns the confirmation alert.
+    private func openNewSculpt(file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
+        app.buttons["cruthMenu"].firstMatch.tap()
+        let item = app.buttons["newSculptButton"].firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 10), "New Sculpt not in the Cruth menu", file: file, line: line)
+        item.tap()
+        let alert = app.alerts.firstMatch
+        XCTAssertTrue(alert.waitForExistence(timeout: 10), "New Sculpt did not ask first", file: file, line: line)
+        return alert
+    }
+
+    /// The test runner and the simulated app share the Mac's file system, so the
+    /// test can watch the app's autosave folder directly.
+    private func waitForFile(_ url: URL, toExist: Bool = true, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: url.path) == toExist { return true }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        return false
     }
 
     private func statusMessage() -> String {

@@ -6,7 +6,11 @@ struct ContentView: View {
     @State private var importing = false
     @State private var exportFile: MeshFile?
     @State private var showPrintCheck = false
+    @State private var diagnosticsFiles: [URL] = []
+    @State private var sharingDiagnostics = false
+    @State private var confirmingNewSculpt = false
     @AppStorage("leftHanded") private var leftHanded = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
@@ -54,12 +58,24 @@ struct ContentView: View {
         .sheet(isPresented: $showPrintCheck) {
             PrintCheckView(session: session)
         }
+        .sheet(isPresented: $sharingDiagnostics) {
+            ShareSheet(items: diagnosticsFiles)
+        }
+        .alert("Start a new sculpt?", isPresented: $confirmingNewSculpt) {
+            Button("New Sculpt", role: .destructive) { session.newSculpt() }
+                .accessibilityIdentifier("newSculptConfirmButton")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The current sculpt and its autosave are discarded. Export it first to keep it.")
+        }
+        .onChange(of: scenePhase) { _, phase in session.scenePhaseChanged(to: phase) }
     }
 
     private var topBar: some View {
         HStack(spacing: 8) {
             Menu {
-                Button("New Sphere", systemImage: "circle.dashed") { session.newSphere() }
+                Button("New Sculpt", systemImage: "circle.dashed") { confirmingNewSculpt = true }
+                    .accessibilityIdentifier("newSculptButton")
                 Button("Import…", systemImage: "square.and.arrow.down") { importing = true }
                 Menu("Export", systemImage: "square.and.arrow.up") {
                     ForEach(MeshFileFormat.allCases) { format in
@@ -81,12 +97,18 @@ struct ContentView: View {
                 }
                 Divider()
                 Toggle("Left-Handed Layout", isOn: $leftHanded)
+                Button("Share Diagnostics…", systemImage: "stethoscope") {
+                    diagnosticsFiles = Diagnostics.shared.snapshot(summary: session.diagnosticsSummary())
+                    sharingDiagnostics = true
+                }
+                .accessibilityIdentifier("shareDiagnosticsButton")
             } label: {
                 Label("Cruth", systemImage: "cube.transparent")
                     .labelStyle(.titleAndIcon)
                     .font(.headline)
             }
             .disabled(session.isBusy)
+            .accessibilityIdentifier("cruthMenu")
 
             Picker("Mode", selection: Binding(get: { session.mode }, set: { session.setMode($0) })) {
                 ForEach(WorkMode.allCases) { Text($0.title).tag($0) }

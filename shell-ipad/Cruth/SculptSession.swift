@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import simd
+import SwiftUI
 import UniformTypeIdentifiers
 
 /// Brushes offered in the palette, mapped onto the core's C enum.
@@ -101,13 +102,17 @@ extension UTType {
 final class SculptSession: ObservableObject {
     private(set) var document: OpaquePointer?
 
-    @Published var brush: BrushKind = .clay
+    @Published var brush: BrushKind = .clay {
+        didSet { if brush != oldValue { Log.input.info("Brush \(brush.title)") } }
+    }
     @Published var radius: Float = 0.12
     @Published var strength: Float = 0.5
     @Published var invert = false
     @Published var symmetryX = true
     @Published var pressureSize = false
-    @Published var fingerSculpting = false
+    @Published var fingerSculpting = false {
+        didSet { if fingerSculpting != oldValue { Log.input.info("Finger sculpting \(fingerSculpting ? "on" : "off")") } }
+    }
 
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
@@ -128,7 +133,10 @@ final class SculptSession: ObservableObject {
     @Published private(set) var guideStrokes: [[SIMD3<Float>]] = []
     @Published var keepDetail = true
     @Published var retopoTool: RetopoTool = .contour {
-        didSet { if oldValue == .quadPen, retopoTool != .quadPen { liftQuadPen() } }
+        didSet {
+            if oldValue == .quadPen, retopoTool != .quadPen { liftQuadPen() }
+            if retopoTool != oldValue { Log.input.info("Retopo tool \(retopoTool.title)") }
+        }
     }
     @Published var loopVertices = 12
     @Published var stripWidth: Float = 0.1
@@ -148,12 +156,24 @@ final class SculptSession: ObservableObject {
     @Published private(set) var documentGeneration = 0
 
     private var brushBeforeSqueeze: BrushKind?
+    private var memoryWarningObserver: NSObjectProtocol?
+    /// Only the first failing call of a stroke is logged, so a broken stroke cannot flood the log.
+    private var strokeFailureLogged = false
 
     init() {
-        newSphere()
+        autosaveStore.prepare()
+        if !restoreAutosave() { loadDefaultSphere() }
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Log.session.error("Memory warning with \(self.vertexCount) vertices, \(self.triangleCount) triangles, " +
+                              "level \(self.level) of \(self.levelCount - 1), busy: \(self.isBusy)")
+        }
     }
 
     deinit {
+        if let memoryWarningObserver { NotificationCenter.default.removeObserver(memoryWarningObserver) }
         if let retopo { cruth_retopo_destroy(retopo) }
         if let document { cruth_document_destroy(document) }
     }
@@ -162,13 +182,15 @@ final class SculptSession: ObservableObject {
 
     func setMode(_ newMode: WorkMode) {
         guard !isBusy, newMode != mode else { return }
+        Log.input.info("Mode \(mode.title) -> \(newMode.title)")
+        if inStroke { endStroke() }  // a sculpt stroke still under a finger ends here
         if mode == .retopo { cancelRetopo() }
         if newMode == .retopo {
             guard let document else { return }
             var handle: OpaquePointer?
             let status = cruth_retopo_begin(document, &handle)
             guard status == CRUTH_OK, let handle else {
-                report(status)
+                report(status, "Begin retopo")
                 return
             }
             retopo = handle
@@ -207,7 +229,7 @@ final class SculptSession: ObservableObject {
                 }
             }
             if status != CRUTH_OK {
-                if retopoTool == .loopAround { flash(status) } else { report(status) }
+                if retopoTool == .loopAround { flash(status) } else { report(status, "Retopo \(retopoTool.title)") }
             }
             refreshRetopo()
         }
@@ -299,7 +321,8 @@ final class SculptSession: ObservableObject {
         cruth_retopo_slide_loop_end(retopo)
         liftQuadPen()
         let levels: Int32 = keepDetail ? 2 : 0
-        runInBackground("Applying retopology…", done: "Retopology applied") { doc in
+        runInBackground("Applying retopology…", command: "Apply retopo, \(levels) detail levels",
+                        done: "Retopology applied") { doc in
             cruth_retopo_apply(retopo, doc, levels)
         } then: {
             self.cancelRetopo()
@@ -342,21 +365,113 @@ final class SculptSession: ObservableObject {
 
     // MARK: Documents
 
-    func newSphere() {
+    /// Starts over on the default sphere and deletes the autosave.
+    func newSculpt() {
         guard !isBusy else { return }
+        Log.session.info("New sculpt")
+        if mode == .retopo { cancelRetopo() }
+        guideStrokes.removeAll()  // they described the old surface
+        if inStroke { endStroke() }
+        autosaveTimer?.cancel()
+        autosaveTimer = nil
+        // A write still queued would bring the deleted autosave back.
+        waitForAutosave()
+        autosaveStore.clear()
+        loadDefaultSphere()
+        dirty = false
+        dirtySince = nil
+        savePending = false
+        confirmRestore(because: "New Sculpt")
+        message = nil
+    }
+
+    private func loadDefaultSphere() {
         var doc: OpaquePointer?
         let status = cruth_document_create_sphere(5, 1.0, &doc)
         replace(with: doc, status: status)
     }
 
+    /// Opens the last session's autosave in place of the default sphere.
+    private func restoreAutosave() -> Bool {
+        guard autosaveStore.exists else { return false }
+        Log.autosave.info("Restore started")
+        let start = Date()
+        guard let doc = autosaveStore.load() else {
+            announce("The last session could not be restored and was set aside")
+            return false
+        }
+        replace(with: doc, status: CRUTH_OK)
+        restorePending = true
+        Log.autosave.info("Restore ended in \(Self.elapsed(since: start)): \(vertexCount) vertices, \(triangleCount) triangles")
+        announce(Self.restoredMessage)
+        return true
+    }
+
+    /// True from a restore until its marker is removed (see AutosaveStore.restoreMarker).
+    private var restorePending = false
+    /// The GPU has finished a frame of the restored mesh.
+    private var restoredFrameCompleted = false
+    /// The renderer reports the first completed frame while this is true.
+    var restoreAwaitingFrame: Bool { restorePending && !restoredFrameCompleted }
+
+    /// Called by the renderer when a frame of the restored mesh has completed.
+    func restoredFrameDrawn() {
+        guard restoreAwaitingFrame else { return }
+        restoredFrameCompleted = true
+        // A couple of seconds more covers whatever follows the first frame of a dense mesh.
+        DispatchQueue.main.asyncAfter(deadline: .now() + AutosaveStore.restoreConfirmDelay) { [weak self] in
+            self?.confirmRestore(because: "the restored mesh was drawn")
+        }
+    }
+
+    /// Removes the restore marker, so the next launch restores normally.
+    private func confirmRestore(because reason: String) {
+        guard restorePending else { return }
+        restorePending = false
+        autosaveStore.confirmRestore(because: reason)
+    }
+
+    /// Leaving the foreground must not leave the marker behind: a background kill
+    /// is ordinary and would set a good autosave aside on the next launch.
+    private func confirmRestoreOnLeaving(_ phase: ScenePhase) {
+        guard restorePending else { return }
+        if restoredFrameCompleted {
+            confirmRestore(because: "the app left the foreground after drawing it")
+        } else if phase == .background {
+            // Nothing drawn yet, so a crash cannot have come from drawing it; keep the work.
+            confirmRestore(because: "the app went to the background before drawing it")
+        }
+    }
+
+    /// Shows a status message and reads it out with VoiceOver. At launch the
+    /// announcement waits a moment, since VoiceOver drops one made before the UI exists.
+    private func announce(_ text: String) {
+        message = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            UIAccessibility.post(notification: .announcement, argument: text)
+        }
+    }
+
+    /// The autosave keeps the current level's mesh only (see AutosaveStore).
+    static let restoredMessage =
+        "Restored your last session: current level only; undo, mask, guides and retopo cage are not kept"
+
     func open(url: URL) {
         guard !isBusy else { return }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        // File names can be personal, so the log gets the type and size only.
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path(percentEncoded: false)))?[.size] as? Int ?? 0
+        Log.commands.info("Import .\(url.pathExtension.lowercased()), \(size) bytes, started")
+        let start = Date()
         var doc: OpaquePointer?
         let status = cruth_document_load(url.path(percentEncoded: false), &doc)
         replace(with: doc, status: status)
-        if status == CRUTH_OK { message = "Opened \(url.lastPathComponent)" }
+        if status == CRUTH_OK {
+            markDirty()
+            message = "Opened \(url.lastPathComponent)"
+            Log.commands.info("Import ended in \(Self.elapsed(since: start)): \(vertexCount) vertices, \(triangleCount) triangles")
+        }
     }
 
     /// Serialises the current mesh through the core's exporter.
@@ -365,12 +480,16 @@ final class SculptSession: ObservableObject {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("cruth-export-\(UUID().uuidString).\(format.rawValue)")
         defer { try? FileManager.default.removeItem(at: url) }
+        Log.commands.info("Export \(format.rawValue.uppercased()) started")
+        let start = Date()
         let status = cruth_document_save(document, url.path(percentEncoded: false))
         guard status == CRUTH_OK else {
-            report(status)
+            report(status, "Export \(format.rawValue.uppercased())")
             return nil
         }
-        return try? Data(contentsOf: url)
+        let data = try? Data(contentsOf: url)
+        Log.commands.info("Export ended in \(Self.elapsed(since: start)): \(data?.count ?? 0) bytes")
+        return data
     }
 
     /// Decimates the most detailed level, unwraps it and bakes normal, AO and
@@ -388,6 +507,8 @@ final class SculptSession: ObservableObject {
         isBusy = true
         busyLabel = "Baking \(textureSize) px maps…"
         let path = folder.path(percentEncoded: false)
+        Log.commands.info("Export game asset \(textureSize) px started")
+        let start = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             var report = CruthAssetReport()
             let status = cruth_document_export_game_asset(document, path, "cruth", 20_000, textureSize, &report)
@@ -396,18 +517,22 @@ final class SculptSession: ObservableObject {
                 self.isBusy = false
                 if status == CRUTH_OK {
                     self.message = "Baked \(report.triangles) triangles, \(report.charts) UV charts"
+                    Log.commands.info("Export game asset ended in \(Self.elapsed(since: start)): " +
+                                      "\(report.triangles) triangles, \(report.charts) charts, \(report.misses) misses")
                     completion(folder)
                 } else {
                     let summary = String(cString: cruth_status_string(status))
                     self.message = detail.isEmpty ? summary : "\(summary): \(detail)"
+                    Log.commands.error("Export game asset failed after \(Self.elapsed(since: start)): \(summary): \(detail)")
                 }
+                self.autosaveIfPending()
             }
         }
     }
 
     private func replace(with doc: OpaquePointer?, status: CruthStatus) {
         guard status == CRUTH_OK, let doc else {
-            report(status)
+            report(status, "Load document")
             return
         }
         if let document { cruth_document_destroy(document) }
@@ -430,22 +555,36 @@ final class SculptSession: ObservableObject {
     }
 
     func beginStroke() {
-        guard let document, !isBusy else { return }
+        guard let document, !isBusy, !inStroke else { return }
         var b = coreBrush
-        _ = cruth_stroke_begin(document, &b)
+        strokeFailureLogged = false
+        let status = cruth_stroke_begin(document, &b)
+        inStroke = status == CRUTH_OK
+        logStrokeFailure(status, "begin")
     }
 
     func addSample(_ position: SIMD3<Float>, pressure: Float) {
-        guard let document else { return }
+        guard let document, inStroke, !isBusy else { return }
         var sample = CruthStrokeSample(position: CruthVec3(x: position.x, y: position.y, z: position.z),
                                        pressure: pressure)
-        _ = cruth_stroke_add_sample(document, &sample)
+        logStrokeFailure(cruth_stroke_add_sample(document, &sample), "sample")
     }
 
+    /// Ends the stroke beginStroke opened, if any; otherwise does nothing.
     func endStroke() {
-        guard let document else { return }
-        _ = cruth_stroke_end(document)
+        guard let document, inStroke else { return }
+        inStroke = false
+        logStrokeFailure(cruth_stroke_end(document), "end")
         refresh()
+        markDirty()
+        autosaveIfPending()
+    }
+
+    private func logStrokeFailure(_ status: CruthStatus, _ step: String) {
+        guard status != CRUTH_OK, !strokeFailureLogged else { return }
+        strokeFailureLogged = true
+        Log.input.error("Stroke \(step) failed: \(String(cString: cruth_status_string(status))): " +
+                        String(cString: cruth_last_error()))
     }
 
     func raycast(origin: SIMD3<Float>, direction: SIMD3<Float>) -> (position: SIMD3<Float>, normal: SIMD3<Float>)? {
@@ -477,22 +616,30 @@ final class SculptSession: ObservableObject {
     /// document's), otherwise the document's.
     func undo() {
         guard !isBusy else { return }
+        if inStroke { endStroke() }
         if let retopo {
             if cruth_retopo_undo(retopo) { refreshRetopo() }
             return
         }
-        guard let document, cruth_undo(document) else { return }
+        guard let document else { return }
+        guard cruth_undo(document) else { return }
+        Log.input.info("Undo")
         refresh()
+        markDirty()
     }
 
     func redo() {
         guard !isBusy else { return }
+        if inStroke { endStroke() }
         if let retopo {
             if cruth_retopo_redo(retopo) { refreshRetopo() }
             return
         }
-        guard let document, cruth_redo(document) else { return }
+        guard let document else { return }
+        guard cruth_redo(document) else { return }
+        Log.input.info("Redo")
         refresh()
+        markDirty()
     }
 
     /// Adds a multires level on top of the stack and moves to it (PRD S-01).
@@ -502,19 +649,22 @@ final class SculptSession: ObservableObject {
             message = "Mesh is already dense; subdividing again would exceed the phase-0 budget."
             return
         }
-        runInBackground("Subdividing…") { cruth_document_subdivide($0, 1) }
+        runInBackground("Subdividing…", command: "Subdivide") { cruth_document_subdivide($0, 1) }
     }
 
     func stepLevel(by delta: Int) {
         guard let document, !isBusy else { return }
         let target = Int32(level + delta)
         guard target >= 0, target < Int32(levelCount) else { return }
-        run(cruth_document_set_level(document, target))
+        if inStroke { endStroke() }
+        Log.input.info("Level \(level) -> \(target)")
+        run(cruth_document_set_level(document, target), "Set level")
     }
 
     /// Rebuilds the mesh as an even, closed quad surface (PRD S-02). Drops multires levels.
     func voxelRemesh(resolution: Int32) {
-        runInBackground("Voxel remeshing at \(resolution)…", done: "Remeshed at \(resolution) voxels") {
+        runInBackground("Voxel remeshing at \(resolution)…", command: "Voxel remesh \(resolution)",
+                        done: "Remeshed at \(resolution) voxels") {
             cruth_document_voxel_remesh($0, resolution)
         }
     }
@@ -525,7 +675,8 @@ final class SculptSession: ObservableObject {
     func quadRemesh(faces: UInt64) {
         let guides = guideStrokes
         let levels: Int32 = keepDetail ? 2 : 0
-        runInBackground("Quad remeshing to \(faces) faces…", done: "Quad remeshed") { doc in
+        runInBackground("Quad remeshing to \(faces) faces…", command: "Quad remesh \(faces), \(guides.count) guides",
+                        done: "Quad remeshed") { doc in
             let points = guides.flatMap { $0 }.map { CruthVec3(x: $0.x, y: $0.y, z: $0.z) }
             let sizes = guides.map { UInt32($0.count) }
             return points.withUnsafeBufferPointer { pts in
@@ -549,18 +700,22 @@ final class SculptSession: ObservableObject {
     func decimate(keeping fraction: Double) {
         guard let document, !isBusy else { return }
         let target = max(4, UInt64(Double(cruth_document_triangle_count(document)) * fraction))
-        runInBackground("Decimating…") { cruth_document_decimate($0, target) }
+        runInBackground("Decimating…", command: "Decimate to \(target)") { cruth_document_decimate($0, target) }
     }
 
     /// Runs a long document command off the main thread. While it runs, input,
     /// other commands, picking and drawing are suspended, so nothing else
     /// touches the document.
-    private func runInBackground(_ label: String, done: String? = nil,
+    /// `command` names it in the diagnostics log.
+    private func runInBackground(_ label: String, command: String, done: String? = nil,
                                  _ work: @escaping (OpaquePointer) -> CruthStatus,
                                  then: (() -> Void)? = nil) {
         guard let document, !isBusy else { return }
+        if inStroke { endStroke() }
         isBusy = true
         busyLabel = label
+        Log.commands.info("\(command) started on \(vertexCount) vertices, \(triangleCount) triangles")
+        let start = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             let status = work(document)
             let detail = String(cString: cruth_last_error())
@@ -569,21 +724,27 @@ final class SculptSession: ObservableObject {
                 if status == CRUTH_OK {
                     self.message = done
                     self.refresh()
+                    self.markDirty()
+                    Log.commands.info("\(command) ended in \(Self.elapsed(since: start)): " +
+                                      "\(self.vertexCount) vertices, \(self.triangleCount) triangles")
                     then?()
                 } else {
                     let summary = String(cString: cruth_status_string(status))
                     self.message = detail.isEmpty ? summary : "\(summary): \(detail)"
+                    Log.commands.error("\(command) failed after \(Self.elapsed(since: start)): \(summary): \(detail)")
                 }
+                self.autosaveIfPending()
             }
         }
     }
 
-    private func run(_ status: CruthStatus) {
+    private func run(_ status: CruthStatus, _ what: String) {
         if status == CRUTH_OK {
             message = nil
             refresh()
+            markDirty()
         } else {
-            report(status)
+            report(status, what)
         }
     }
 
@@ -604,7 +765,7 @@ final class SculptSession: ObservableObject {
         var result = CruthPrintReport()
         let status = cruth_document_check_print(document, &result)
         guard status == CRUTH_OK else {
-            report(status)
+            report(status, "Print check")
             return nil
         }
         return result
@@ -613,12 +774,16 @@ final class SculptSession: ObservableObject {
     func repairForPrint() -> CruthRepairLog? {
         guard let document, !isBusy else { return nil }
         var log = CruthRepairLog()
+        Log.commands.info("Repair for print started")
+        let start = Date()
         let status = cruth_document_repair_print(document, &log)
         guard status == CRUTH_OK else {
-            report(status)
+            report(status, "Repair for print")
             return nil
         }
+        Log.commands.info("Repair for print ended in \(Self.elapsed(since: start))")
         refresh()
+        markDirty()
         return log
     }
 
@@ -641,16 +806,179 @@ final class SculptSession: ObservableObject {
         levelCount = Int(cruth_document_level_count(document))
     }
 
-    private func report(_ status: CruthStatus) {
+    /// Shows a failed C API call in the status bar and logs it; `what` names the call for the log.
+    private func report(_ status: CruthStatus, _ what: String) {
         let detail = String(cString: cruth_last_error())
         let summary = String(cString: cruth_status_string(status))
+        Log.commands.error("\(what) failed: \(summary): \(detail)")
         message = detail.isEmpty ? summary.capitalized : "\(summary.capitalized): \(detail)"
     }
 
     /// Reports a rejected cage edit for a few seconds; the reason is usually enough.
     private func flash(_ status: CruthStatus) {
         let detail = String(cString: cruth_last_error())
+        Log.input.error("Retopo \(retopoTool.title) refused: \(String(cString: cruth_status_string(status))): \(detail)")
         flash(detail.isEmpty ? String(cString: cruth_status_string(status)).capitalized : detail)
+    }
+
+    static func elapsed(since start: Date) -> String {
+        String(format: "%.3f s", Date().timeIntervalSince(start))
+    }
+
+    // MARK: Diagnostics
+
+    func scenePhaseChanged(to phase: ScenePhase) {
+        Log.session.info("Scene phase \(String(describing: phase))")
+        // iPadOS may end a background app at any time; save before that can happen.
+        if phase != .active {
+            confirmRestoreOnLeaving(phase)
+            autosave(reason: "scene \(String(describing: phase))")
+        }
+    }
+
+    // MARK: Autosave
+
+    /// Edit-driven saves are debounced: one runs once edits pause for the quiet delay...
+    private static let autosaveQuietDelay: TimeInterval = AutosaveStore.delayOverride ?? 3
+    /// ...but no later than this after the first unsaved edit, so non-stop work is saved too...
+    private static let autosaveMaxDelay: TimeInterval = (AutosaveStore.delayOverride ?? 30) * 2
+    /// ...and never sooner than this after the previous save started.
+    private static let autosaveMinInterval: TimeInterval = AutosaveStore.delayOverride ?? 30
+
+    private let autosaveStore = AutosaveStore.standard()
+    /// Writes run here, off the main thread. They write a snapshot of the mesh
+    /// taken on the main thread (cruth_document_snapshot, a copy), never the
+    /// document itself, so edits never wait for a write. A snapshot is never
+    /// taken during a stroke or a background command, so it never holds half an edit.
+    private let autosaveQueue = DispatchQueue(label: "org.cruth.autosave", qos: .utility)
+    private var isSaving = false
+    /// The document changed since the last autosave snapshot.
+    private var dirty = false
+    /// When the oldest unsaved edit was made.
+    private var dirtySince: Date?
+    /// A save fell due during a stroke, command or other save; it runs when that ends.
+    private var savePending = false
+    /// Keeps the app running in the background while a pending save waits for a command.
+    private var pendingSaveTask: BackgroundTask?
+    private var inStroke = false
+    private var lastSaveStart = Date.distantPast
+    private var autosaveTimer: DispatchWorkItem?
+
+    private func markDirty() {
+        dirty = true
+        if dirtySince == nil { dirtySince = Date() }
+        scheduleAutosave()
+    }
+
+    /// (Re)starts the debounce timer.
+    private func scheduleAutosave() {
+        autosaveTimer?.cancel()
+        let now = Date()
+        let due = max(min(now.addingTimeInterval(Self.autosaveQuietDelay),
+                          (dirtySince ?? now).addingTimeInterval(Self.autosaveMaxDelay)),
+                      lastSaveStart.addingTimeInterval(Self.autosaveMinInterval))
+        let item = DispatchWorkItem { [weak self] in
+            self?.autosaveTimer = nil
+            self?.autosave(reason: "edits")
+        }
+        autosaveTimer = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, due.timeIntervalSince(now)), execute: item)
+    }
+
+    private func autosaveIfPending() {
+        if savePending { autosave(reason: "deferred") }
+    }
+
+    /// Saves the document if it changed since the last save: a snapshot on the
+    /// main thread, the write on the autosave queue.
+    func autosave(reason: String) {
+        guard dirty, let document else { return }
+        if isBusy || inStroke || isSaving {
+            if !savePending {
+                let why = isBusy ? "a command is running" : inStroke ? "a stroke is in progress" : "a save is running"
+                Log.autosave.info("Autosave (\(reason)) deferred: \(why)")
+            }
+            savePending = true
+            // Leaving the foreground during a command: stay alive until the save can run.
+            if pendingSaveTask == nil, UIApplication.shared.applicationState != .active {
+                pendingSaveTask = BackgroundTask(name: "Autosave pending")
+            }
+            return
+        }
+        autosaveTimer?.cancel()
+        autosaveTimer = nil
+        let snapshotStart = Date()
+        var snapshot: OpaquePointer?
+        let status = cruth_document_snapshot(document, &snapshot)
+        let snapshotTime = Self.elapsed(since: snapshotStart)
+        let task = BackgroundTask(name: "Autosave")
+        pendingSaveTask?.end()
+        pendingSaveTask = nil
+        guard status == CRUTH_OK, let snapshot else {
+            Log.autosave.error("Autosave (\(reason)) snapshot failed: \(String(cString: cruth_status_string(status))): " +
+                               String(cString: cruth_last_error()))
+            savePending = false
+            lastSaveStart = snapshotStart  // e.g. out of memory: don't retry every few seconds
+            scheduleAutosave()  // dirty stays set: try again later
+            task.end()
+            return
+        }
+        isSaving = true
+        dirty = false
+        dirtySince = nil
+        savePending = false
+        lastSaveStart = snapshotStart
+        let generation = documentGeneration
+        let store = autosaveStore
+        let vertices = vertexCount
+        autosaveQueue.async {
+            let start = Date()
+            let result = Result { try store.write(snapshot) }
+            cruth_mesh_destroy(snapshot)
+            let seconds = String(format: "%.3f s", Date().timeIntervalSince(start))
+            DispatchQueue.main.async {
+                self.isSaving = false
+                switch result {
+                case .success(let bytes):
+                    // The file on disk is no longer the one being restored.
+                    self.confirmRestore(because: "a newer autosave was written")
+                    Log.autosave.info("Autosave (\(reason)): snapshot \(snapshotTime) on the main thread, " +
+                                      "write \(seconds): \(vertices) vertices, \(bytes) bytes")
+                case .failure(let error):
+                    Log.autosave.error("Autosave (\(reason)) failed after \(seconds): \(error)")
+                    if generation == self.documentGeneration, !self.dirty {
+                        self.dirty = true
+                        self.dirtySince = Date()
+                    }
+                }
+                task.end()
+                if self.savePending { self.autosave(reason: "deferred") } else if self.dirty { self.scheduleAutosave() }
+            }
+        }
+    }
+
+    /// Blocks until queued autosave writes have finished. Only New Sculpt needs
+    /// it, so a late write cannot bring back the autosave it deletes.
+    private func waitForAutosave() {
+        guard isSaving else { return }
+        let start = Date()
+        autosaveQueue.sync {}
+        Log.autosave.info("New Sculpt waited \(Self.elapsed(since: start)) for an autosave write")
+    }
+
+    /// The plain-text summary that Share Diagnostics puts next to the log files.
+    func diagnosticsSummary() -> String {
+        """
+        Cruth \(Diagnostics.appVersion), core \(String(cString: cruth_version()))
+        \(Diagnostics.systemVersion)
+        Device: \(Diagnostics.deviceModel)
+        Date: \(Date().formatted(.iso8601))
+        Mesh: \(vertexCount) vertices, \(triangleCount) triangles, level \(level) of \(levelCount - 1)
+        Mode: \(mode.title)\(mode == .retopo ? ", tool \(retopoTool.title)" : ""), brush \(brush.title), \
+        finger sculpting \(fingerSculpting ? "on" : "off")
+        Busy: \(isBusy ? busyLabel : "no")
+
+        """
     }
 
     /// Each flash gets a token, so a repeat of the same message gets its own 4 s

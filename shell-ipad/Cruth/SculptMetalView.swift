@@ -29,6 +29,8 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     private var pinchGesture: UIPinchGestureRecognizer!
 
     private var strokeTouch: UITouch?
+    /// The touch began in Sculpt mode, so it stays a sculpt stroke even if the mode changes under it.
+    private var sculptTouch = false
     private var grabPlane: (point: SIMD3<Float>, normal: SIMD3<Float>)?
 
     // Guides and retopology draw as overlays, re-projected when the camera moves.
@@ -404,7 +406,8 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
         touchTool = session.mode == .retopo && session.retopoTool.input != .stroke ? session.retopoTool : nil
         touchTravelled = false
         slide = nil
-        if session.mode == .sculpt { session.beginStroke() }
+        sculptTouch = session.mode == .sculpt
+        if sculptTouch { session.beginStroke() }
         if touchTool != nil {
             let location = touch.location(in: self)
             touchOrigin = (location, surfacePoint(at: location))
@@ -435,7 +438,7 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     /// commit is false when the touch turned into navigation or was cancelled:
     /// a pending tap is then dropped rather than placed.
     private func finishStroke(commit: Bool) {
-        if session.mode == .sculpt {
+        if sculptTouch {
             session.endStroke()
         } else if let tool = touchTool {
             if slide != nil {
@@ -462,6 +465,7 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
             session.completePath(points, viewDirection: renderer?.camera.forward ?? SIMD3(0, 0, -1))
         }
         strokeTouch = nil
+        sculptTouch = false
         grabPlane = nil
         cursor.isHidden = true
         setNeedsLayout()
@@ -532,7 +536,7 @@ final class SculptMetalView: MTKView, UIGestureRecognizerDelegate, UIPencilInter
     private func addSamples(for touch: UITouch, event: UIEvent?) {
         guard let renderer else { return }
         let samples = event?.coalescedTouches(for: touch) ?? [touch]
-        if session.mode != .sculpt {
+        if !sculptTouch {
             for sample in samples {
                 let ray = renderer.camera.ray(through: sample.preciseLocation(in: self), viewSize: bounds.size)
                 if let hit = session.raycast(origin: ray.origin, direction: ray.direction) { pathPoints.append(hit.position) }
