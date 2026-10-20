@@ -29,7 +29,7 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 ./build/release/tests/cruth_tests                     # unit tests only, prints each test
 ./build/release/tools/cruth-acceptance/cruth-acceptance --scale smoke --out build/acc   # 7 s; --scale full ~80 s
 cmake --preset asan && cmake --build --preset asan && ctest --preset asan              # before committing core changes
-./scripts/ipad.sh build        # iPad app for the simulator (macOS + Xcode 26 only)
+./scripts/ipad.sh build        # iPad app for the simulator (macOS + Xcode 26 or newer)
 ./scripts/ipad.sh run          # build, wait for the simulator to boot, launch, stream logs
 ./scripts/ipad.sh test         # 25-test XCUITest smoke suite in the simulator
 ```
@@ -56,7 +56,7 @@ cmake --preset asan && cmake --build --preset asan && ctest --preset asan       
 
 ## Current state
 
-Phase 0 (headless core) has met its exit gate locally. See ROADMAP for measurements and known issues. The iPad shell builds and runs on a Mac (Xcode 26.6, iPad Pro 13-inch M5 simulator, iOS 26.5), and the core passes ctest on macOS/arm64. Things to know:
+Phase 0 (headless core) has met its exit gate locally. See ROADMAP for measurements and known issues. The iPad shell builds and runs on a Mac (first built with Xcode 26.6, now Xcode 27.1; iOS 26.5 simulators and an iPadOS 27 iPad), and the core passes ctest on macOS/arm64. Things to know:
 - The Metal toolchain must be downloaded once (`xcodebuild -downloadComponent MetalToolchain`) before `Shaders.metal` compiles.
 - `./scripts/ipad.sh test` runs a 25-test XCUITest smoke suite. `ipad.sh run` waits for the simulator to boot.
 - First device install done: iPad Pro 12.9" M1, iPadOS 27.0.1, Xcode 27.1, Release build. `./scripts/ipad.sh build|run|device` take `--release`. `ipad.sh device` builds for the connected iPad (`-allowProvisioningDeviceRegistration`, simulators skipped) and signs through `shell-ipad/Signing.local.xcconfig`.

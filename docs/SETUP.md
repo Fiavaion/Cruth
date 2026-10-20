@@ -7,7 +7,7 @@ This gets you from a fresh clone to the C++ core building and testing, and to th
 | | For the C++ core | For the iPad app |
 | --- | --- | --- |
 | Computer | macOS, Linux or Windows | **a Mac** (Apple silicon recommended) |
-| Compiler | Xcode command-line tools, Clang 15+, GCC 12+ or MSVC 2022 | **Xcode 26** with an iPadOS 26 simulator runtime |
+| Compiler | Xcode command-line tools, Clang 15+, GCC 12+ or MSVC 2022 | **Xcode 26 or newer** (tested with 27.1) with an iPadOS 26+ simulator runtime |
 | Tools | CMake 3.21+, Ninja | XcodeGen (`brew install xcodegen`) |
 | Editor | VS Code with the Claude Code extension | same |
 
@@ -110,7 +110,7 @@ Good first prompts:
 
 - **`cmake --preset` says Ninja not found:** `brew install ninja` (macOS) or `sudo apt install ninja-build` (Linux).
 - **`xcodebuild` says it requires Xcode** but only the command-line tools are selected: `sudo xcode-select -s /Applications/Xcode.app`.
-- **"Metal Toolchain not installed"** when compiling `Shaders.metal`: Xcode 26 ships the Metal compiler as a separate component. Run `xcodebuild -downloadComponent MetalToolchain`, or use Xcode → Settings → Components.
+- **"Metal Toolchain not installed"** when compiling `Shaders.metal`: Xcode 26 and newer ship the Metal compiler as a separate component. Run `xcodebuild -downloadComponent MetalToolchain`, or use Xcode → Settings → Components.
 - **No iPad simulator:** Xcode → Settings → Components, install the iOS 26 simulator runtime.
 - **"No signing certificate" or "requires a development team"** on a device build: see section 5. Simulator builds need no signing.
 - **"No Accounts" or "profile doesn't include the device":** sign in under Xcode → Settings → Accounts. Xcode updates can drop the sign-in.
