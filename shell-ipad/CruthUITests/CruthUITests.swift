@@ -431,22 +431,35 @@ final class CruthUITests: XCTestCase {
     // MARK: Display
 
     func testDisplayModesAndWireframeChangeTheViewport() {
+        // A coarse mesh, so Flat's faceting shows clearly against Lit.
+        let before = statusCounts.label
+        app.buttons["topologyMenu"].tap()
+        for item in ["Decimate", "Keep 10%"] {
+            let button = app.buttons[item].firstMatch
+            XCTAssertTrue(button.waitForExistence(timeout: 10), "menu item '\(item)' not found")
+            button.tap()
+        }
+        waitFor(statusCounts, "label != %@", before, timeout: 120, "Decimate did not change the mesh")
         let lit = viewportPixels()
+
         selectShading("normals")
         XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.05, "Normals looks like Lit")
-        selectShading("xray")
-        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.05, "X-Ray looks like Lit")
         selectShading("flat")
-        _ = waitForViewportChange(from: lit)  // faceting on 12k triangles is subtle; it must just draw
+        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.0025, "Flat looks like Lit")
         selectShading("lit")
         XCTAssertLessThan(waitForViewportMatch(lit), 0.002, "Lit did not come back unchanged")
-
         setWireframe(true)
-        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.002, "the wireframe did not draw")
-        selectShading("xray")
+        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.0025, "the wireframe did not draw over Lit")
         setWireframe(false)
-        selectShading("lit")
         XCTAssertLessThan(waitForViewportMatch(lit), 0.002, "wireframe off did not clear it")
+
+        selectShading("xray")
+        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.05, "X-Ray looks like Lit")
+        let xray = viewportPixels()
+        setWireframe(true)
+        XCTAssertGreaterThan(waitForViewportChange(from: xray), 0.0025, "the wireframe did not draw over X-Ray")
+        setWireframe(false)
+        XCTAssertLessThan(waitForViewportMatch(xray), 0.002, "wireframe off did not clear X-Ray")
 
         // Display stays available outside Sculpt mode.
         selectMode("Retopo")
@@ -521,7 +534,7 @@ final class CruthUITests: XCTestCase {
     /// The centre of the viewport (on the model, clear of the panels) as a
     /// small RGBA thumbnail, so screenshots can be compared cheaply.
     private func viewportPixels() -> [UInt8] {
-        let side = 48
+        let side = 128
         var pixels = [UInt8](repeating: 0, count: side * side * 4)
         guard let image = viewport.screenshot().image.cgImage else { return pixels }
         let crop = CGRect(x: CGFloat(image.width) * 0.35, y: CGFloat(image.height) * 0.3,

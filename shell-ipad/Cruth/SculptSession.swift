@@ -149,6 +149,11 @@ final class SculptSession: ObservableObject {
     }
     private static let shadingKey = "displayShading"
     private static let wireframeKey = "displayWireframe"
+    /// Launch arguments (the UI tests) pin the display; changes made then are not saved.
+    private static let displayPinned: Bool = {
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        return arguments[shadingKey] != nil || arguments[wireframeKey] != nil
+    }()
     /// True while a long command runs off the main thread; input is ignored meanwhile.
     @Published private(set) var isBusy = false
     @Published private(set) var busyLabel = ""
@@ -208,6 +213,7 @@ final class SculptSession: ObservableObject {
 
     private func persistDisplay(_ change: String) {
         Log.input.info(change)
+        guard !Self.displayPinned else { return }
         UserDefaults.standard.set(shading.rawValue, forKey: Self.shadingKey)
         UserDefaults.standard.set(wireframe, forKey: Self.wireframeKey)
     }

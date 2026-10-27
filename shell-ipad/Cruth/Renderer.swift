@@ -193,10 +193,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         vertexRevisions = Array(repeating: .max, count: Renderer.framesInFlight)
     }
 
-    /// Polygon edges for the wireframe, fetched only while it is shown.
+    /// Polygon edges for the wireframe, fetched only while it is shown. A failed
+    /// upload leaves the key unset, so the next frame tries again.
     private func syncEdges(_ document: OpaquePointer, key: TopologyKey) {
         guard key != edgeKey else { return }
-        edgeKey = key
         edgeIndexCount = 0
         let count = cruth_document_edge_count(document) * 2
         guard count > 0,
@@ -206,6 +206,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         guard cruth_document_copy_edges(document, pointer, count) == CRUTH_OK else { return }
         edgeBuffer = buffer
         edgeIndexCount = count
+        edgeKey = key
     }
 
     private func syncVertices(_ document: OpaquePointer, slot: Int) {
