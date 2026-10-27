@@ -37,7 +37,7 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 - [x] Finger sculpting: a finger on the model sculpts, a finger on the background still orbits; a mouse or trackpad sculpts the same way (I-01)
 - [x] "Draw with Finger" toggle in the Guides and Retopo panels
 - [x] Guide and cage overlays are occluded by the model, with a faint dashed pass for the hidden parts
-- [x] XCUITest smoke suite (25 tests) behind `./scripts/ipad.sh test`
+- [x] XCUITest smoke suite (26 tests) behind `./scripts/ipad.sh test`
 - [x] Autosave and restore of the current sculpt (L-04, partial): binary PLY of the current level in Application Support/Autosave, written off the main thread from a core snapshot (`cruth_document_snapshot`, `cruth_mesh_save`, `cruth_mesh_destroy` in `cruth.h`), debounced (3 s quiet, 60 s cap, 30 s minimum), saved inside a background task on background, atomic replace. Restored at launch with a message; a restore marker guards against crash loops and broken files are set aside, keeping the newest 3. "New Sculpt" is the reset command. Not kept: levels above and below the current one, undo history, mask, guides, retopo cage
 - [x] On-device diagnostics: os.Logger (subsystem `org.cruth.app`), a rolling 1 MB log file with absolute paths redacted, and "Share Diagnostics…" in the Cruth menu
 - [x] iPad shell is single-window (`UIApplicationSupportsMultipleScenes` false)
@@ -50,6 +50,7 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 - [x] UV packing: exact rotating-calipers chart boxes, MaxRects with 90° turns, tightest square tile, skyline packer above 500 charts per tile, texel padding reported in `UnwrapStats` (U-04)
 - [x] Retopology core: quad-pen taps chained into strips, slide loop, closed loop around a feature (`insert_loop_around`), insert loop in the C API, 32-step cage undo history, quad-pen rejection of folded, crossed and repeated quads (T-02, T-03)
 - [x] iPad Retopo tools: Quad Pen, Slide Loop, Insert Loop and Loop Around, finger-driven, with cage undo in Retopo mode (T-02, T-03)
+- [x] Viewport display modes in a Display menu, in every mode and remembered between launches: Lit (the clay look), Flat (per-triangle normals from screen-space derivatives), X-Ray (fresnel-weighted, blended, no depth writes) and Normals (view-space normal as colour). A Wireframe overlay draws over any of them and shows polygon edges (quads after quad remesh, no fan diagonals) from `cruth_document_edge_count` / `cruth_document_copy_edges`, cached per topology revision; the surface takes a depth bias under it so the lines do not z-fight
 
 ### Measured (CPU reference, 4-core Linux VM, Release)
 
@@ -67,6 +68,7 @@ The PRD defines four phases gated by measurable exit criteria rather than dates.
 | UV tile utilisation, sphere level 5 | before → after the new packer | 0.385 → 0.626 |
 | Bake normal + height + AO (16 spp) + VDM, 512² | 12k → 98k-quad source | 0.8 s |
 | BVH refit + ray after a brush sample, level-8 quad sphere (393k vertices), radius 0.12 | full refit → partial refit | 3.2 ms → 0.05 ms |
+| Unique polygon edges for the wireframe, level-8 quad sphere (786k edges), Apple M5 Pro | first extraction, then cached | 5.8 ms |
 | Acceptance chain, smoke | 197k-triangle head → 4.7k quads, 2 × 1K tiles | 7 s |
 | Acceptance chain, full | 3.1M-triangle head → 19.5k quads, 2 × 4K tiles | 77 s (quad remesh 48 s, bake 16 s) |
 
