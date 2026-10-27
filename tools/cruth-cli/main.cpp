@@ -419,9 +419,9 @@ int main(int argc, char** argv) {
         PrintReport r = check_printability(m.value());
         if (cmd == "info") {
             Vec3 lo = r.bounds.lo, hi = r.bounds.hi;
-            std::printf("%zu vertices, %zu faces, %zu triangles\nbounds [%g %g %g] - [%g %g %g]\n", r.vertices,
-                        r.faces, r.triangles, double(lo.x), double(lo.y), double(lo.z), double(hi.x),
-                        double(hi.y), double(hi.z));
+            std::printf("%zu vertices, %zu faces, %zu edges, %zu triangles\nbounds [%g %g %g] - [%g %g %g]\n",
+                        r.vertices, r.faces, m.value().unique_edges().size() / 2, r.triangles, double(lo.x),
+                        double(lo.y), double(lo.z), double(hi.x), double(hi.y), double(hi.z));
             return 0;
         }
         print_report(r, json);

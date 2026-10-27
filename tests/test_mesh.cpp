@@ -46,6 +46,14 @@ TEST(unique_edges_are_polygon_edges_counted_once) {
     pair.add_face({2, 1, 3});
     CHECK_EQ(pair.unique_edges().size(), 10u);
 
+    // A face that repeats a vertex: the zero-length edge 1-1 is skipped.
+    Mesh repeated;
+    for (int i = 0; i < 3; ++i) repeated.add_vertex({float(i), float(i % 2), 0});
+    repeated.add_face({0, 1, 1, 2});
+    const auto r = repeated.unique_edges();
+    REQUIRE(r.size() == 6u);  // 0-1, 0-2, 1-2
+    for (std::size_t e = 0; e < r.size(); e += 2) CHECK(r[e] < r[e + 1]);
+
     CHECK_EQ(make_cube().unique_edges().size(), 24u);
     // A level-n quad sphere has 6·4ⁿ quads, so 12·4ⁿ edges (each quad has 4, each edge 2 quads).
     for (int n = 0; n <= 3; ++n) {

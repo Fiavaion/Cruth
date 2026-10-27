@@ -507,6 +507,15 @@ TEST(c_api_snapshot_survives_later_edits) {
     cruth_mesh_destroy(nullptr);
 }
 
+TEST(document_edges_are_cached_per_topology) {
+    Document doc(make_quad_sphere(2));
+    const Index* first = doc.edges().data();
+    CHECK_EQ(doc.edges().size(), 2u * 12u * 16u);
+    CHECK(doc.edges().data() == first);  // the same buffer, not recomputed
+    REQUIRE(doc.subdivide(1));
+    CHECK_EQ(doc.edges().size(), 2u * 12u * 64u);
+}
+
 TEST(c_api_edges_follow_topology) {
     CHECK_EQ(cruth_document_edge_count(nullptr), 0u);
     uint32_t scratch[2];
