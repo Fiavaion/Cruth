@@ -143,6 +143,11 @@ uint64_t cruth_document_topology_revision(const CruthDocument* doc);
 CruthStatus cruth_document_copy_vertices(const CruthDocument* doc, float* out, size_t float_capacity);
 /* Writes triangle_count * 3 indices. */
 CruthStatus cruth_document_copy_triangles(const CruthDocument* doc, uint32_t* out, size_t index_capacity);
+/* Unique polygon edges (no fan diagonals) for a wireframe: edge_count pairs of
+ * vertex indices (a < b). Computed once per topology revision. */
+size_t cruth_document_edge_count(const CruthDocument* doc);
+/* Writes edge_count * 2 indices. */
+CruthStatus cruth_document_copy_edges(const CruthDocument* doc, uint32_t* out, size_t index_capacity);
 void cruth_document_bounds(const CruthDocument* doc, CruthVec3* min, CruthVec3* max);
 
 /* Picking ------------------------------------------------------------------ */

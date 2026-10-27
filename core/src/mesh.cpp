@@ -46,6 +46,43 @@ std::vector<Index> Mesh::triangulated_indices() const {
     return out;
 }
 
+std::vector<Index> Mesh::unique_edges() const {
+    // Counting sort by the lower endpoint; each row is then sorted and
+    // de-duplicated, so the cost stays linear in corners (rows are short).
+    const std::size_t n = vertex_count();
+    std::vector<Index> start(n + 1, 0);
+    for (std::size_t f = 0; f < face_count(); ++f) {
+        auto fv = face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            const Index a = fv[i], b = fv[(i + 1) % fv.size()];
+            if (a != b) ++start[std::min(a, b) + 1];
+        }
+    }
+    for (std::size_t i = 1; i <= n; ++i) start[i] += start[i - 1];
+    std::vector<Index> upper(start[n]);
+    std::vector<Index> fill(start.begin(), start.end() - 1);
+    for (std::size_t f = 0; f < face_count(); ++f) {
+        auto fv = face(f);
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            const Index a = fv[i], b = fv[(i + 1) % fv.size()];
+            if (a != b) upper[fill[std::min(a, b)]++] = std::max(a, b);
+        }
+    }
+
+    std::vector<Index> out;
+    out.reserve(upper.size());  // each interior edge appears twice, so this is ample
+    for (std::size_t v = 0; v < n; ++v) {
+        auto first = upper.begin() + start[v], last = upper.begin() + start[v + 1];
+        std::sort(first, last);
+        last = std::unique(first, last);
+        for (auto it = first; it != last; ++it) {
+            out.push_back(static_cast<Index>(v));
+            out.push_back(*it);
+        }
+    }
+    return out;
+}
+
 // Newell's method: robust for non-planar polygons; the length is twice the area.
 static Vec3 newell(const Mesh& m, std::size_t f) {
     Vec3 n;

@@ -26,6 +26,39 @@ TEST(cube_is_closed_and_outward) {
     for (std::size_t f = 0; f < cube.face_count(); ++f) CHECK(dot(cube.face_normal(f), cube.face_centroid(f)) > 0);
 }
 
+TEST(unique_edges_are_polygon_edges_counted_once) {
+    CHECK(Mesh().unique_edges().empty());
+
+    Mesh quad;
+    for (int i = 0; i < 4; ++i) quad.add_vertex({float(i & 1), float(i >> 1), 0});
+    quad.add_face({0, 1, 3, 2});
+    const auto q = quad.unique_edges();
+    REQUIRE(q.size() == 8u);  // 4 edges, no fan diagonal
+    for (std::size_t e = 0; e < q.size(); e += 2) {
+        CHECK(q[e] < q[e + 1]);
+        CHECK(!(q[e] == 0 && q[e + 1] == 3) && !(q[e] == 1 && q[e + 1] == 2));  // the diagonals
+    }
+
+    // Two triangles sharing an edge (given in opposite directions): 5 edges.
+    Mesh pair;
+    for (int i = 0; i < 4; ++i) pair.add_vertex({float(i), float(i % 2), 0});
+    pair.add_face({0, 1, 2});
+    pair.add_face({2, 1, 3});
+    CHECK_EQ(pair.unique_edges().size(), 10u);
+
+    CHECK_EQ(make_cube().unique_edges().size(), 24u);
+    // A level-n quad sphere has 6·4ⁿ quads, so 12·4ⁿ edges (each quad has 4, each edge 2 quads).
+    for (int n = 0; n <= 3; ++n) {
+        const Mesh sphere = make_quad_sphere(n);
+        const auto edges = sphere.unique_edges();
+        CHECK_EQ(edges.size(), 2u * 12u * (std::size_t(1) << (2 * n)));
+        for (std::size_t e = 0; e < edges.size(); e += 2) {
+            CHECK(edges[e] < edges[e + 1]);
+            CHECK(edges[e + 1] < sphere.vertex_count());
+        }
+    }
+}
+
 TEST(half_edge_build_and_roundtrip) {
     Mesh cube = make_cube();
     auto he = HalfEdgeMesh::build(cube);

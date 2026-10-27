@@ -113,6 +113,9 @@ public:
     // index data when topology_revision changes.
     std::uint64_t geometry_revision() const { return sculptor_.revision() + topology_revision_; }
     std::uint64_t topology_revision() const { return topology_revision_; }
+    // The current mesh's unique polygon edges (Mesh::unique_edges), kept until
+    // the topology changes, for a wireframe overlay.
+    const std::vector<Index>& edges() const;
 
     // How the picking BVH has been kept current, for tests and profiling.
     struct BvhUpdates {
@@ -157,6 +160,9 @@ private:
     mutable std::uint64_t bvh_geometry_ = ~std::uint64_t(0);
     mutable std::uint64_t bvh_journal_ = 0;  // sculptor journal mark the BVH is synced to
     mutable BvhUpdates bvh_updates_;
+
+    mutable std::vector<Index> edges_;
+    mutable std::uint64_t edges_topology_ = ~std::uint64_t(0);
 };
 
 const char* brush_name(BrushType type);

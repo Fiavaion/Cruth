@@ -507,6 +507,33 @@ TEST(c_api_snapshot_survives_later_edits) {
     cruth_mesh_destroy(nullptr);
 }
 
+TEST(c_api_edges_follow_topology) {
+    CHECK_EQ(cruth_document_edge_count(nullptr), 0u);
+    uint32_t scratch[2];
+    CHECK(cruth_document_copy_edges(nullptr, scratch, 2) == CRUTH_ERROR_INVALID_ARGUMENT);
+
+    CruthDocument* doc = nullptr;
+    REQUIRE(cruth_document_create_sphere(3, 1.0f, &doc) == CRUTH_OK);
+    const size_t verts = cruth_document_vertex_count(doc);
+    const size_t edges = cruth_document_edge_count(doc);
+    CHECK_EQ(edges, 12u * 64u);
+    CHECK(cruth_document_copy_edges(doc, nullptr, edges * 2) == CRUTH_ERROR_INVALID_ARGUMENT);
+    std::vector<uint32_t> buf(edges * 2);
+    CHECK(cruth_document_copy_edges(doc, buf.data(), buf.size() - 1) == CRUTH_ERROR_INVALID_ARGUMENT);
+    REQUIRE(cruth_document_copy_edges(doc, buf.data(), buf.size()) == CRUTH_OK);
+    for (size_t e = 0; e < edges; ++e) {
+        CHECK(buf[2 * e] < buf[2 * e + 1]);
+        CHECK(buf[2 * e + 1] < verts);
+    }
+
+    // A topology change (and its undo) must not serve stale edges.
+    REQUIRE(cruth_document_subdivide(doc, 1) == CRUTH_OK);
+    CHECK_EQ(cruth_document_edge_count(doc), 12u * 256u);
+    REQUIRE(cruth_undo(doc));
+    CHECK_EQ(cruth_document_edge_count(doc), 12u * 64u);
+    cruth_document_destroy(doc);
+}
+
 TEST(c_api_end_to_end) {
     CruthDocument* doc = nullptr;
     REQUIRE(cruth_document_create_sphere(4, 1.0f, &doc) == CRUTH_OK);

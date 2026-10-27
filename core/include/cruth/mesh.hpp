@@ -49,6 +49,9 @@ public:
     std::size_t triangle_count() const;
     // Fan-triangulated index buffer (3 indices per triangle), as a renderer wants it.
     std::vector<Index> triangulated_indices() const;
+    // Each undirected polygon edge once, as flattened (a, b) pairs with a < b:
+    // a wireframe of the polygons, without the fan diagonals.
+    std::vector<Index> unique_edges() const;
 
     Vec3 face_normal(std::size_t f) const;  // unit, Newell's method
     float face_area(std::size_t f) const;

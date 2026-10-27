@@ -247,6 +247,14 @@ PrintReport Document::check_printability() const { return cruth::check_printabil
 void Document::clear_mask() { sculptor_.clear_mask(); }
 void Document::invert_mask() { sculptor_.invert_mask(); }
 
+const std::vector<Index>& Document::edges() const {
+    if (edges_topology_ != topology_revision_) {
+        edges_ = mesh_.unique_edges();
+        edges_topology_ = topology_revision_;
+    }
+    return edges_;
+}
+
 const TriangleBVH& Document::bvh() const {
     if (bvh_topology_ != topology_revision_) {
         bvh_.build(mesh_);

@@ -238,6 +238,21 @@ CruthStatus cruth_document_copy_triangles(const CruthDocument* doc, uint32_t* ou
     });
 }
 
+size_t cruth_document_edge_count(const CruthDocument* doc) {
+    if (!doc) return 0;
+    return guarded_value<size_t>(0, [&] { return doc->doc.edges().size() / 2; });
+}
+
+CruthStatus cruth_document_copy_edges(const CruthDocument* doc, uint32_t* out, size_t index_capacity) {
+    if (!doc || !out) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "null argument");
+    return guarded([&] {
+        const auto& edges = doc->doc.edges();
+        if (index_capacity < edges.size()) return fail(CRUTH_ERROR_INVALID_ARGUMENT, "buffer too small");
+        std::copy(edges.begin(), edges.end(), out);
+        return CRUTH_OK;
+    });
+}
+
 void cruth_document_bounds(const CruthDocument* doc, CruthVec3* min, CruthVec3* max) {
     cruth::Bounds b;
     if (doc) b = doc->doc.mesh().bounds();
