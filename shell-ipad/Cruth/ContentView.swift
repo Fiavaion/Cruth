@@ -120,6 +120,8 @@ struct ContentView: View {
 
             Spacer()
 
+            displayMenu
+
             // Everything here edits or reads the document, which a background
             // command owns while busy.
             Group {
@@ -161,6 +163,26 @@ struct ContentView: View {
         case .guides: GuidesPanel(session: session)
         case .retopo: RetopoPanel(session: session)
         }
+    }
+
+    /// Viewport shading and the wireframe overlay. Display only, so it stays
+    /// usable in every mode and while a command runs.
+    private var displayMenu: some View {
+        Menu {
+            Picker("Shading", selection: $session.shading) {
+                ForEach(ShadingMode.allCases) { mode in
+                    Text(mode.title)
+                        .tag(mode)
+                        .accessibilityIdentifier("shading.\(mode.rawValue)")
+                }
+            }
+            .pickerStyle(.inline)
+            Toggle("Wireframe", systemImage: "square.grid.3x3", isOn: $session.wireframe)
+                .accessibilityIdentifier("wireframeToggle")
+        } label: {
+            Label("Display", systemImage: "circle.lefthalf.filled")
+        }
+        .accessibilityIdentifier("displayMenu")
     }
 
     /// Multires, voxel remesh and decimation (PRD S-01, S-02, S-04).

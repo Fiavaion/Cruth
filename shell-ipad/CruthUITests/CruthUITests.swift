@@ -36,8 +36,9 @@ final class CruthUITests: XCTestCase {
     /// `autosaveDelay` sets the app's debug-only interval between edit-driven autosaves.
     private func launchApp(autosaveDelay: TimeInterval? = nil, restoreConfirmDelay: TimeInterval? = nil) {
         app = XCUIApplication()
-        // Pin the number format ("6,146") and the default (right-handed) layout.
+        // Pin the number format ("6,146"), the default (right-handed) layout and display.
         app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-leftHanded", "NO",
+                                "-displayShading", "lit", "-displayWireframe", "NO",
                                 "-cruthAutosavePath", autosaveDirectory.path]
         if let autosaveDelay { app.launchArguments += ["-cruthAutosaveDelay", "\(autosaveDelay)"] }
         if let restoreConfirmDelay { app.launchArguments += ["-cruthRestoreConfirmDelay", "\(restoreConfirmDelay)"] }
@@ -99,7 +100,15 @@ final class CruthUITests: XCTestCase {
     }
 
     func testQuadRemeshAndUndo() {
-        runTopologyCommand(["Quad Remesh", "2,000 quads"], timeout: 600)
+        // With the wireframe on, so the remeshed quads' edge buffer is drawn too.
+        setWireframe(true)
+        runTopologyCommand(["Quad Remesh", "2,000 quads"], timeout: 600) {
+            XCTAssertEqual(app.state, .runningForeground)
+            let wired = viewportPixels()
+            setWireframe(false)
+            XCTAssertGreaterThan(waitForViewportChange(from: wired), 0.002, "the wireframe did not draw after quad remesh")
+            setWireframe(true)
+        }
     }
 
     func testGuideStrokesAreRecordedAndCleared() {
@@ -419,6 +428,32 @@ final class CruthUITests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: autosaveFile.path), "New Sculpt left the autosave behind")
     }
 
+    // MARK: Display
+
+    func testDisplayModesAndWireframeChangeTheViewport() {
+        let lit = viewportPixels()
+        selectShading("normals")
+        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.05, "Normals looks like Lit")
+        selectShading("xray")
+        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.05, "X-Ray looks like Lit")
+        selectShading("flat")
+        _ = waitForViewportChange(from: lit)  // faceting on 12k triangles is subtle; it must just draw
+        selectShading("lit")
+        XCTAssertLessThan(waitForViewportMatch(lit), 0.002, "Lit did not come back unchanged")
+
+        setWireframe(true)
+        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.002, "the wireframe did not draw")
+        selectShading("xray")
+        setWireframe(false)
+        selectShading("lit")
+        XCTAssertLessThan(waitForViewportMatch(lit), 0.002, "wireframe off did not clear it")
+
+        // Display stays available outside Sculpt mode.
+        selectMode("Retopo")
+        selectShading("normals")
+        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.05, "Normals did not apply in Retopo")
+    }
+
     // MARK: Diagnostics
 
     func testShareDiagnosticsOpensTheShareSheet() {
@@ -442,7 +477,8 @@ final class CruthUITests: XCTestCase {
     /// Opens the Topology menu, follows `path` through its submenus, waits for
     /// the vertex count to change, then undoes back to the sphere.
     private func runTopologyCommand(_ path: [String], timeout: TimeInterval,
-                                    file: StaticString = #filePath, line: UInt = #line) {
+                                    file: StaticString = #filePath, line: UInt = #line,
+                                    whileChanged: () -> Void = {}) {
         let before = statusCounts.label
         app.buttons["topologyMenu"].tap()
         for item in path {
@@ -455,7 +491,78 @@ final class CruthUITests: XCTestCase {
                 file: file, line: line)
         XCTAssertNotEqual(vertexCount(), initialVertices, file: file, line: line)
         XCTAssertTrue(undoButton.isEnabled, file: file, line: line)
+        whileChanged()
         undo(backTo: initialVertices, file: file, line: line)
+    }
+
+    /// Display menu > a shading mode, by its raw value ("lit", "xray", ...).
+    private func selectShading(_ mode: String, file: StaticString = #filePath, line: UInt = #line) {
+        app.buttons["displayMenu"].firstMatch.tap()
+        let item = app.buttons["shading.\(mode)"].firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 10), "shading '\(mode)' not in the Display menu",
+                      file: file, line: line)
+        item.tap()
+        waitFor(item, "exists == false", timeout: 5, "the Display menu did not close", file: file, line: line)
+    }
+
+    private func setWireframe(_ on: Bool, file: StaticString = #filePath, line: UInt = #line) {
+        app.buttons["displayMenu"].firstMatch.tap()
+        let toggle = app.descendants(matching: .any)["wireframeToggle"].firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10), "Wireframe not in the Display menu", file: file, line: line)
+        let isOn = (toggle.value as? String) == "1" || toggle.isSelected
+        if isOn != on {
+            toggle.tap()
+        } else {
+            app.buttons["displayMenu"].firstMatch.tap()  // close the menu unchanged
+        }
+        waitFor(toggle, "exists == false", timeout: 5, "the Display menu did not close", file: file, line: line)
+    }
+
+    /// The centre of the viewport (on the model, clear of the panels) as a
+    /// small RGBA thumbnail, so screenshots can be compared cheaply.
+    private func viewportPixels() -> [UInt8] {
+        let side = 48
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        guard let image = viewport.screenshot().image.cgImage else { return pixels }
+        let crop = CGRect(x: CGFloat(image.width) * 0.35, y: CGFloat(image.height) * 0.3,
+                          width: CGFloat(image.width) * 0.3, height: CGFloat(image.height) * 0.4)
+        guard let centre = image.cropping(to: crop.integral) else { return pixels }
+        pixels.withUnsafeMutableBytes { buffer in
+            let context = CGContext(data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8,
+                                    bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            context?.interpolationQuality = .medium
+            context?.draw(centre, in: CGRect(x: 0, y: 0, width: side, height: side))
+        }
+        return pixels
+    }
+
+    /// Mean absolute channel difference, 0...1.
+    private func difference(_ a: [UInt8], _ b: [UInt8]) -> Double {
+        guard a.count == b.count, !a.isEmpty else { return 1 }
+        let total = zip(a, b).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }
+        return Double(total) / Double(a.count) / 255
+    }
+
+    /// Waits for a frame that differs from `reference`; returns the last difference seen.
+    private func waitForViewportChange(from reference: [UInt8], timeout: TimeInterval = 3) -> Double {
+        waitForViewport(reference, timeout: timeout) { $0 > 0.002 }
+    }
+
+    /// Waits for a frame that matches `reference`; returns the last difference seen.
+    private func waitForViewportMatch(_ reference: [UInt8], timeout: TimeInterval = 3) -> Double {
+        waitForViewport(reference, timeout: timeout) { $0 <= 0.002 }
+    }
+
+    private func waitForViewport(_ reference: [UInt8], timeout: TimeInterval, until done: (Double) -> Bool) -> Double {
+        let deadline = Date().addingTimeInterval(timeout)
+        var last = 0.0
+        repeat {
+            last = difference(reference, viewportPixels())
+            if done(last) { return last }
+            Thread.sleep(forTimeInterval: 0.1)
+        } while Date() < deadline
+        return last
     }
 
     private func undo(backTo vertices: Int, file: StaticString = #filePath, line: UInt = #line) {

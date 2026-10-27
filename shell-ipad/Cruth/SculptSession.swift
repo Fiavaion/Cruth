@@ -53,6 +53,20 @@ enum WorkMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// How the viewport shades the mesh. Display only: never touches the document.
+enum ShadingMode: String, CaseIterable, Identifiable {
+    case lit, flat, xray, normals
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .lit: return "Lit"
+        case .flat: return "Flat"
+        case .xray: return "X-Ray"
+        case .normals: return "Normals"
+        }
+    }
+}
+
 enum RetopoTool: String, CaseIterable, Identifiable {
     case contour, strip, quadPen, slideLoop, insertLoop, loopAround
     var id: String { rawValue }
@@ -124,6 +138,17 @@ final class SculptSession: ObservableObject {
         didSet { if let document { cruth_document_set_base_locked(document, lockBaseLevel) } }
     }
     @Published var message: String?
+
+    // Viewport display, remembered between launches (UserDefaults, so a
+    // launch argument such as `-displayShading lit` overrides it).
+    @Published var shading: ShadingMode = .lit {
+        didSet { if shading != oldValue { persistDisplay("Shading \(shading.title)") } }
+    }
+    @Published var wireframe = false {
+        didSet { if wireframe != oldValue { persistDisplay("Wireframe \(wireframe ? "on" : "off")") } }
+    }
+    private static let shadingKey = "displayShading"
+    private static let wireframeKey = "displayWireframe"
     /// True while a long command runs off the main thread; input is ignored meanwhile.
     @Published private(set) var isBusy = false
     @Published private(set) var busyLabel = ""
@@ -161,6 +186,9 @@ final class SculptSession: ObservableObject {
     private var strokeFailureLogged = false
 
     init() {
+        let defaults = UserDefaults.standard
+        shading = defaults.string(forKey: Self.shadingKey).flatMap(ShadingMode.init(rawValue:)) ?? .lit
+        wireframe = defaults.bool(forKey: Self.wireframeKey)
         autosaveStore.prepare()
         if !restoreAutosave() { loadDefaultSphere() }
         memoryWarningObserver = NotificationCenter.default.addObserver(
@@ -176,6 +204,12 @@ final class SculptSession: ObservableObject {
         if let memoryWarningObserver { NotificationCenter.default.removeObserver(memoryWarningObserver) }
         if let retopo { cruth_retopo_destroy(retopo) }
         if let document { cruth_document_destroy(document) }
+    }
+
+    private func persistDisplay(_ change: String) {
+        Log.input.info(change)
+        UserDefaults.standard.set(shading.rawValue, forKey: Self.shadingKey)
+        UserDefaults.standard.set(wireframe, forKey: Self.wireframeKey)
     }
 
     // MARK: Modes, guides and retopology
