@@ -510,8 +510,10 @@ TEST(c_api_snapshot_survives_later_edits) {
 TEST(document_edges_are_cached_per_topology) {
     Document doc(make_quad_sphere(2));
     const Index* first = doc.edges().data();
-    CHECK_EQ(doc.edges().size(), 2u * 12u * 16u);
+    // Checked on the very next call: a recompute allocates while the first buffer is still alive,
+    // so the address must differ (a later call could reuse the freed first buffer).
     CHECK(doc.edges().data() == first);  // the same buffer, not recomputed
+    CHECK_EQ(doc.edges().size(), 2u * 12u * 16u);
     REQUIRE(doc.subdivide(1));
     CHECK_EQ(doc.edges().size(), 2u * 12u * 64u);
 }

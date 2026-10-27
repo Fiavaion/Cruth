@@ -443,28 +443,28 @@ final class CruthUITests: XCTestCase {
         let lit = viewportPixels()
 
         selectShading("normals")
-        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.05, "Normals looks like Lit")
+        XCTAssertGreaterThan(waitForViewportChange(from: lit, threshold: 0.05), 0.05, "Normals looks like Lit")
         selectShading("flat")
-        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.0025, "Flat looks like Lit")
+        XCTAssertGreaterThan(waitForViewportChange(from: lit, threshold: 0.0025), 0.0025, "Flat looks like Lit")
         selectShading("lit")
         XCTAssertLessThan(waitForViewportMatch(lit), 0.002, "Lit did not come back unchanged")
         setWireframe(true)
-        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.0025, "the wireframe did not draw over Lit")
+        XCTAssertGreaterThan(waitForViewportChange(from: lit, threshold: 0.0025), 0.0025, "the wireframe did not draw over Lit")
         setWireframe(false)
         XCTAssertLessThan(waitForViewportMatch(lit), 0.002, "wireframe off did not clear it")
 
         selectShading("xray")
-        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.05, "X-Ray looks like Lit")
+        XCTAssertGreaterThan(waitForViewportChange(from: lit, threshold: 0.05), 0.05, "X-Ray looks like Lit")
         let xray = viewportPixels()
         setWireframe(true)
-        XCTAssertGreaterThan(waitForViewportChange(from: xray), 0.0025, "the wireframe did not draw over X-Ray")
+        XCTAssertGreaterThan(waitForViewportChange(from: xray, threshold: 0.0025), 0.0025, "the wireframe did not draw over X-Ray")
         setWireframe(false)
         XCTAssertLessThan(waitForViewportMatch(xray), 0.002, "wireframe off did not clear X-Ray")
 
         // Display stays available outside Sculpt mode.
         selectMode("Retopo")
         selectShading("normals")
-        XCTAssertGreaterThan(waitForViewportChange(from: lit), 0.05, "Normals did not apply in Retopo")
+        XCTAssertGreaterThan(waitForViewportChange(from: lit, threshold: 0.05), 0.05, "Normals did not apply in Retopo")
     }
 
     // MARK: Diagnostics
@@ -557,9 +557,12 @@ final class CruthUITests: XCTestCase {
         return Double(total) / Double(a.count) / 255
     }
 
-    /// Waits for a frame that differs from `reference`; returns the last difference seen.
-    private func waitForViewportChange(from reference: [UInt8], timeout: TimeInterval = 3) -> Double {
-        waitForViewport(reference, timeout: timeout) { $0 > 0.002 }
+    /// Waits for a frame that differs from `reference` by more than `threshold` (pass the same
+    /// bound the caller asserts, so an in-between frame doesn't end the wait early); returns the
+    /// last difference seen.
+    private func waitForViewportChange(from reference: [UInt8], threshold: Double = 0.002,
+                                       timeout: TimeInterval = 3) -> Double {
+        waitForViewport(reference, timeout: timeout) { $0 > threshold }
     }
 
     /// Waits for a frame that matches `reference`; returns the last difference seen.
