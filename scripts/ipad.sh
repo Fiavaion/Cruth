@@ -102,7 +102,9 @@ case "$command" in
     generate
     device="${CRUTH_DEVICE:-}"
     if [[ -z "$device" ]]; then
-      device="$(xcrun devicectl list devices 2>/dev/null | grep -i ipad | grep -v simulated \
+      # Prefer a connected iPad over one that is only paired (on the network or asleep).
+      ipads="$(xcrun devicectl list devices 2>/dev/null | grep -i ipad | grep -v simulated || true)"
+      device="$( { grep -w connected <<<"$ipads"; cat <<<"$ipads"; } \
         | grep -oE '[0-9A-Fa-f-]{20,40} \(UDID\)' | head -1 | cut -d' ' -f1 || true)"  # device UDIDs are 8-16 hex, not UUIDs
     fi
     [[ -n "$device" ]] || fail "no iPad found. Connect it, unlock it, trust this Mac, and enable Developer Mode; or set CRUTH_DEVICE (see: xcrun devicectl list devices)"
